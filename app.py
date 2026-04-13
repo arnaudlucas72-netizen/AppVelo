@@ -147,6 +147,7 @@ if sunset:
     if datetime.now().astimezone() > (sunset - timedelta(hours=1)):
         col3.warning("⚠️ Visibilité en baisse bientôt !")
 
+st.divider()
 with st.expander("ℹ️ À propos de cette application"):
     with open("README.md", "r", encoding="utf-8") as f:
         st.markdown(f.read())
