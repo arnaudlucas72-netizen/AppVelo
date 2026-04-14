@@ -13,7 +13,7 @@ import hashlib
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", layout="wide", page_icon="🚴")
 
-# Initialisation des variables de session
+# Initialisation robuste des variables
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
 if 'coords' not in st.session_state:
@@ -21,7 +21,7 @@ if 'coords' not in st.session_state:
 if 'pts_gpx' not in st.session_state:
     st.session_state.pts_gpx = None
 
-# --- 2. LOGIQUE GPX (DÉTECTION ET RERUN) ---
+# --- 2. LOGIQUE GPX (DÉTECTION PRIORITAIRE) ---
 st.sidebar.header("🌍 Configuration")
 f_gpx = st.sidebar.file_uploader("📂 Importer GPX", type=['gpx'], key="gpx_uploader")
 
@@ -34,7 +34,7 @@ if f_gpx is not None:
             st.session_state.pts_gpx = pts
             st.session_state.coords = (pts[0][0], pts[0][1])
             
-            # Détection du nom de la ville
+            # Forcer la détection de la nouvelle ville
             try:
                 g_inv = geocoder.osm(st.session_state.coords, method='reverse')
                 if g_inv and g_inv.ok:
@@ -42,12 +42,13 @@ if f_gpx is not None:
                     if ville_detectee:
                         st.session_state.nom_ville = ville_detectee
             except:
-                pass
+                st.session_state.nom_ville = "Parcours importé"
+            
             st.rerun() 
     except Exception as e:
         st.sidebar.error(f"Erreur GPX : {e}")
 
-# Champ manuel synchronisé
+# Champ manuel
 ville_input = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
 if ville_input != st.session_state.nom_ville:
     g = geocoder.osm(ville_input)
@@ -67,19 +68,18 @@ def obtenir_meteo(lat, lon):
 
 weather = obtenir_meteo(st.session_state.coords[0], st.session_state.coords[1])
 
-# --- 4. RÉGLAGES SENSIBILITÉ ---
+# --- 4. RÉGLAGES ---
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Paramètres de confort")
 sf = st.sidebar.slider("🌡️ Sensibilité Froid", 0, 10, 5)
 sv = st.sidebar.slider("💨 Sensibilité Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
-# --- 5. AFFICHAGE PRINCIPAL ---
+# --- 5. AFFICHAGE DES SCORES ---
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
 if weather and 'hourly' in weather:
     st.subheader(f"🌤️ Prévisions et Scores à {st.session_state.nom_ville}")
-    
     cols = st.columns(4)
     heures = [10, 13, 16, 19]
     
@@ -88,7 +88,6 @@ if weather and 'hourly' in weather:
         vent = weather['hourly']['windspeed_10m'][h]
         pluie = weather['hourly']['precipitation_probability'][h]
         
-        # Calcul du score
         malus_froid = (12 - temp) * sf if temp < 12 else 0
         malus_vent = vent * (sv / 5)
         malus_pluie = pluie * (sp / 5)
@@ -98,17 +97,17 @@ if weather and 'hourly' in weather:
         
         with cols[i]:
             st.markdown(f"""
-            <div style="text-align: center; border: 1px solid #ddd; padding: 20px; border-radius: 15px; background-color: #fcfcfc; box-shadow: 2px 2px 5px rgba(0,0,0,0.05);">
-                <h3 style="margin:0; color: #555;">{h}h00</h3>
-                <h1 style="color:{couleur}; margin:15px 0; font-size: 2.5em;">{score}/100</h1>
+            <div style="text-align: center; border: 1px solid #ddd; padding: 20px; border-radius: 15px; background-color: #fcfcfc;">
+                <h3 style="margin:0;">{h}h00</h3>
+                <h1 style="color:{couleur}; margin:15px 0;">{score}/100</h1>
                 <p style="margin:5px 0;">🌡️ <b>{temp}°C</b></p>
-                <p style="margin:0; color: #666; font-size: 0.8em;">💨 {vent} km/h | 🌧️ {pluie}%</p>
+                <p style="margin:0; color: #666;">💨 {vent} km/h | 🌧️ {pluie}%</p>
             </div>
             """, unsafe_allow_html=True)
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE, INSCRIPTION & IA ---
+# --- 6. ESPACE MEMBRE & CRÉATION DE COMPTE ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -122,34 +121,25 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             user_exists = u_id in df_all['user'].astype(str).values
             
             if user_exists:
-                st.sidebar.success(f"Cycliste reconnu : {u}")
+                st.sidebar.success(f"Cycliste : {u}")
                 user_data = df_all[df_all['user'].astype(str) == u_id]
-                
                 if len(user_data) >= 3:
                     st.subheader(f"🤖 Analyse IA pour {u}")
                     model = RandomForestRegressor(n_estimators=100, random_state=42)
                     model.fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
-                    
                     t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
                     pred = model.predict([[t13, v13, h13]])[0]
                     st.metric("🎯 Puissance estimée (13h)", f"{int(pred)} Watts")
-                else:
-                    st.info(f"Besoin de 3 sorties pour l'IA (Actuel : {len(user_data)})")
-            
             else:
                 st.sidebar.warning("Utilisateur inconnu")
                 if st.sidebar.button("➕ Créer ce compte"):
-                    new_user_row = pd.DataFrame([{
-                        'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
-                        'date': datetime.now().strftime("%Y-%m-%d")
-                    }])
-                    updated_df = pd.concat([df_all, new_user_row], ignore_index=True)
+                    new_row = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                    updated_df = pd.concat([df_all, new_row], ignore_index=True)
                     conn.update(worksheet="Performances", data=updated_df)
                     st.sidebar.success("Compte créé ! Re-cliquez sur Connexion.")
                     st.rerun()
-                    
-        except Exception as e:
-            st.sidebar.error(f"Erreur GSheets : {e}")
+        except:
+            st.sidebar.error("Erreur de connexion GSheets.")
 
 # --- 7. CARTE ---
 if st.session_state.pts_gpx:
