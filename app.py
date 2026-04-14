@@ -58,24 +58,22 @@ if user_name:
     st.header(f"🤖 Espace IA de {user_name}")
     
     try:
-        # Lecture des données
         df_all = conn.read(worksheet="Performances")
-        # Nettoyage au cas où le sheet a des lignes vides
         df_all = df_all.dropna(how='all')
         df_user = df_all[df_all['user'] == user_name]
     except:
         df_user = pd.DataFrame()
 
     col_ia1, col_ia2 = st.columns([1, 2])
+    nb_sorties = len(df_user)
     
-    if not df_user.empty and len(df_user) >= 3:
-        # Calcul Fiabilité
+    if nb_sorties >= 3:
+        # --- CALCULS IA (Si on a assez de données) ---
         t_bins = pd.cut(df_user['temp'], bins=[-10, 10, 22, 50], labels=['Froid', 'Bon', 'Chaud'])
         w_bins = pd.cut(df_user['wind'], bins=[0, 15, 100], labels=['Calme', 'Venté'])
         nb_remplies = len(df_user.groupby([t_bins, w_bins], observed=False).size().reset_index(name='c').query('c > 0'))
         fiabilite = min(100, int((nb_remplies / 6) * 100))
         
-        # IA
         X = df_user[['temp', 'wind', 'hum']]
         y = df_user['watts']
         model = RandomForestRegressor(n_estimators=100, random_state=42)
@@ -90,36 +88,46 @@ if user_name:
         with col_ia2:
             st.success(f"🎯 **Estimation à 13h** : **{int(pred)} Watts**")
     else:
-        st.info("💡 Enregistre encore quelques sorties pour activer l'IA.")
+        # --- COMPTEUR AVANT ACTIVATION ---
+        with col_ia1:
+            st.metric("Sorties enregistrées", f"{nb_sorties}/3")
+        with col_ia2:
+            manquant = 3 - nb_sorties
+            st.warning(f"🚀 Encore **{manquant}** sortie{'s' if manquant > 1 else ''} à enregistrer pour activer ton IA perso !")
 
     # Zone d'enregistrement
     with st.expander("📥 Enregistrer une nouvelle sortie"):
         f_csv = st.file_uploader("Charger CSV", type=['csv'], key="csv_upload")
         if f_csv and st.button(f"Mémoriser pour {user_name}"):
-            df_new = pd.read_csv(f_csv)
-            df_new.columns = [c.lower().strip() for c in df_new.columns]
-            
-            # Calcul des moyennes de la sortie
-            watts_moy = df_new[df_new['watts']>0]['watts'].mean()
-            temp_moy = df_new[df_new['watts']>0]['temp'].mean() if 'temp' in df_new.columns else data_m['hourly']['temperature_2m'][12]
-            
-            nouvelle_ligne = pd.DataFrame([{
-                'user': user_name,
-                'temp': temp_moy,
-                'wind': data_m['hourly']['windspeed_10m'][12],
-                'hum': data_m['hourly']['relative_humidity_2m'][12],
-                'watts': watts_moy,
-                'date': datetime.now().strftime("%Y-%m-%d")
-            }])
-            
-            # Reconstruction sécurisée du dataframe final
-            df_final = pd.concat([df_all, nouvelle_ligne], ignore_index=True)
-            
-            # Envoi vers Google Sheets
-            conn.update(worksheet="Performances", data=df_final)
-            st.success("Sortie sauvegardée dans le Cloud !")
-            st.cache_data.clear()
-            st.rerun()
+            with st.spinner("Envoi vers le Cloud..."):
+                df_new = pd.read_csv(f_csv)
+                df_new.columns = [c.lower().strip() for c in df_new.columns]
+                
+                watts_moy = df_new[df_new['watts']>0]['watts'].mean()
+                temp_moy = df_new[df_new['watts']>0]['temp'].mean() if 'temp' in df_new.columns else data_m['hourly']['temperature_2m'][12]
+                
+                nouvelle_ligne = pd.DataFrame([{
+                    'user': user_name,
+                    'temp': temp_moy,
+                    'wind': data_m['hourly']['windspeed_10m'][12],
+                    'hum': data_m['hourly']['relative_humidity_2m'][12],
+                    'watts': watts_moy,
+                    'date': datetime.now().strftime("%Y-%m-%d")
+                }])
+                
+                df_final = pd.concat([df_all, nouvelle_ligne], ignore_index=True)
+                conn.update(worksheet="Performances", data=df_final)
+                
+                st.balloons() # Petite animation de fête
+                st.success(f"✅ Sortie de {int(watts_moy)}W enregistrée avec succès !")
+                st.cache_data.clear()
+                st.rerun()
+
+    # Petit récap des dernières activités
+    if not df_user.empty:
+        st.write("### 📜 Tes dernières sorties")
+        st.dataframe(df_user[['date', 'temp', 'wind', 'watts']].sort_values(by='date', ascending=False).head(5))
+
 else:
     st.info("👈 Entre ton prénom dans la barre latérale pour accéder à ton IA.")
 
