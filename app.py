@@ -116,8 +116,9 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
     if u and p:
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
-            df = conn.read(worksheet="Performances", ttl=0)
+            df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
             u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+            
             user_data = df[df['user'].astype(str) == u_id]
             
             if not user_data.empty:
@@ -128,8 +129,23 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
                     t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
                     pred = model.predict([[t13, v13, h13]])[0]
                     st.metric("🎯 Puissance estimée (13h)", f"{int(pred)} Watts")
-        except:
-            st.sidebar.error("Erreur de connexion aux données.")
+                else:
+                    st.info(f"Besoin de 3 sorties pour l'IA (Actuel : {len(user_data)})")
+            else:
+                # PARTIE COMPTE : Si l'utilisateur n'existe pas
+                st.sidebar.warning("Utilisateur inconnu")
+                if st.sidebar.button("➕ Créer ce compte"):
+                    new_user = pd.DataFrame([{
+                        'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
+                        'date': datetime.now().strftime("%Y-%m-%d")
+                    }])
+                    updated_df = pd.concat([df, new_user], ignore_index=True)
+                    conn.update(worksheet="Performances", data=updated_df)
+                    st.sidebar.success("Compte créé ! Re-connectez-vous.")
+                    st.rerun()
+
+        except Exception as e:
+            st.sidebar.error(f"Erreur : {e}")
 
 # --- 7. CARTE ---
 if st.session_state.pts_gpx:
