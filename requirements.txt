@@ -1,10 +1,9 @@
 streamlit
+st-gsheets-connection
+pandas
 requests
 geocoder
 gpxpy
-pandas
 folium
 streamlit-folium
-plotly
 scikit-learn
-st-gsheets-connection
