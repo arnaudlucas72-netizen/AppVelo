@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
-import pd
+import pandas as pd
 import requests
 import geocoder
 import gpxpy
@@ -22,24 +22,25 @@ def obtenir_meteo(lat, lon):
 
 # --- 2. BARRE LATÉRALE ---
 st.sidebar.header("📍 1. Météo Locale")
-ville_choisie = st.sidebar.text_input("Ville active", value="Cholet")
+# Changement de la clé pour forcer le rafraîchissement du texte
+ville_active = st.sidebar.text_input("Ville active", value="Cholet", key="v_active_unique")
 
 st.sidebar.divider()
 st.sidebar.header("📂 2. Analyse Parcours")
-f_gpx = st.sidebar.file_uploader("Importer un GPX", type=['gpx'])
+f_gpx = st.sidebar.file_uploader("Importer un GPX", type=['gpx'], key="gpx_fix")
 
 st.sidebar.divider()
 st.sidebar.header("🔓 3. Espace Membre")
-membre_on = st.sidebar.checkbox("Accès Membre")
+membre_on = st.sidebar.checkbox("Accès Membre", key="m_check")
 
-# --- 3. ZONE HAUTE : SCORES ET DATA ---
-st.title(f"🚴 Coach IA : {ville_choisie}")
-g_local = geocoder.osm(ville_choisie)
+# --- 3. ZONE HAUTE : SCORES (DÉBLOQUÉS) ---
+st.title(f"🚴 Coach IA : {ville_active}")
+g_local = geocoder.osm(ville_active)
 
 if g_local and g_local.ok:
     w_local = obtenir_meteo(g_local.lat, g_local.lng)
     if w_local:
-        st.subheader(f"🌤️ Prévisions et Scores à {ville_choisie}")
+        st.subheader(f"🌤️ Prévisions et Scores à {ville_active}")
         cols = st.columns(4)
         heures = [10, 13, 16, 19]
         for i, h in enumerate(heures):
@@ -47,7 +48,7 @@ if g_local and g_local.ok:
             v = w_local['hourly']['windspeed_10m'][h]
             p = w_local['hourly']['precipitation_probability'][h]
             
-            # Ton algorithme de score original
+            # Calcul du score avec affichage couleur
             score = int(max(0, min(100, 100 - ((12-t)*5 if t<12 else 0) - v)))
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
             
@@ -63,58 +64,48 @@ if g_local and g_local.ok:
 
 st.divider()
 
-# --- 4. ZONE BASSE : GPX ET VRAI NOM DE VILLE ---
+# --- 4. ZONE BASSE : GPX ---
 if f_gpx:
     gpx_parsed = gpxpy.parse(f_gpx.getvalue())
     pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
     
     if pts:
         lat_s, lon_s = pts[0][0], pts[0][1]
-        # Détection forcée de la ville de départ
+        # REVERSE GEOCODING FORCÉ
         g_s = geocoder.osm([lat_s, lon_s], method='reverse')
-        ville_gpx = g_s.city if (g_s and g_s.city) else (g_s.town if g_s.town else "Lieu détecté")
+        ville_gpx = "Lieu inconnu"
+        if g_s and g_s.ok:
+            ville_gpx = g_s.city if g_s.city else (g_s.town if g_s.town else g_s.address)
         
-        st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
+        st.header(f"🗺️ Parcours au départ de : {ville_gpx}")
         
         w_gpx = obtenir_meteo(lat_s, lon_s)
         if w_gpx:
-            st.write(f"📊 Météo au départ de **{ville_gpx}** :")
+            st.info(f"📊 Météo au point de départ ({ville_gpx})")
             m_cols = st.columns(4)
             for i, h in enumerate([10, 13, 16, 19]):
-                tg, vg = w_gpx['hourly']['temperature_2m'][h], w_gpx['hourly']['windspeed_10m'][h]
-                m_cols[i].metric(f"{h}h00", f"{tg}°C", f"{vg} km/h")
+                m_cols[i].metric(f"{h}h00", f"{w_gpx['hourly']['temperature_2m'][h]}°C", f"{w_gpx['hourly']['windspeed_10m'][h]} km/h")
         
         m = folium.Map(location=[lat_s, lon_s], zoom_start=12)
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
-        st_folium(m, width=1100, height=400, key="map_fixed")
+        st_folium(m, width=1100, height=400, key=f"map_{ville_gpx}")
 
-# --- 5. LOGIQUE MEMBRE ET BOUTON + ---
+# --- 5. ESPACE MEMBRE & BOUTON + ---
 if membre_on:
-    u = st.sidebar.text_input("Pseudo")
-    p = st.sidebar.text_input("Pass", type="password")
+    u = st.sidebar.text_input("Pseudo", key="u_name")
+    p = st.sidebar.text_input("Pass", type="password", key="u_pass")
     
-    if u and p:
-        u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
-        
-        # Bouton Créer TOUJOURS présent sous le pass
-        if st.sidebar.button("➕ Créer ce compte"):
+    # BOUTON CRÉER : Toujours visible si Accès Membre est coché
+    if st.sidebar.button("➕ Créer ce compte", key="btn_create_final"):
+        if u and p:
             try:
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-                new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
-                conn.update(worksheet="Performances", data=pd.concat([df, new_user], ignore_index=True))
-                st.sidebar.success("Compte créé !")
-            except: st.sidebar.error("Erreur GSheets")
-
-        # IA
-        try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-            user_data = df[df['user'].astype(str) == u_id]
-            if not user_data.empty:
-                st.sidebar.success(f"Cycliste : {u}")
-                if len(user_data) >= 3 and w_local:
-                    model = RandomForestRegressor(n_estimators=100).fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
-                    pred = model.predict([[w_local['hourly']['temperature_2m'][13], w_local['hourly']['windspeed_10m'][13], w_local['hourly']['relative_humidity_2m'][13]]])[0]
-                    st.metric("🎯 Puissance estimée", f"{int(pred)} W")
-        except: pass
+                u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+                new_row = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                conn.update(worksheet="Performances", data=pd.concat([df, new_row], ignore_index=True))
+                st.sidebar.success("Compte créé avec succès !")
+            except: st.sidebar.error("Erreur de connexion GSheets")
+        else:
+            st.sidebar.warning("Saisissez un pseudo et un mot de passe.")
+            
