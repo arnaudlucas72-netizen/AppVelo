@@ -13,39 +13,44 @@ import hashlib
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", page_icon="🚴", layout="wide")
 
-# Initialisation des variables de session
+# Initialisation des variables
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
+if 'pts_gpx' not in st.session_state:
+    st.session_state.pts_gpx = None
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 # --- 2. FONCTION DE DÉTECTION (CALLBACK) ---
-def update_ville_from_gpx():
+def traiter_gpx():
     f = st.session_state.gpx_uploader
     if f is not None:
         try:
+            # On lit le fichier une seule fois ici
             gpx_parsed = gpxpy.parse(f)
             pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
+            
             if pts:
+                st.session_state.pts_gpx = pts
+                # On cherche la ville (ex: Soullans)
                 g_inv = geocoder.osm([pts[0][0], pts[0][1]], method='reverse')
                 ville_trouvee = g_inv.city if g_inv.city else g_inv.town
                 if ville_trouvee:
                     st.session_state.nom_ville = ville_trouvee
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Erreur lecture GPX : {e}")
 
 # --- 3. BARRE LATÉRALE ---
 st.sidebar.header("🌍 Localisation & Parcours")
 
-# On utilise on_change pour forcer la mise à jour avant le rendu du titre
+# Le déclencheur qui change TOUT avant l'affichage du titre
 st.sidebar.file_uploader(
     "📂 Importer un GPX", 
     type=['gpx'], 
     key="gpx_uploader", 
-    on_change=update_ville_from_gpx
+    on_change=traiter_gpx
 )
 
-# Champ de saisie (synchronisé avec la détection auto)
 ville_input = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
 if ville_input != st.session_state.nom_ville:
     st.session_state.nom_ville = ville_input
@@ -57,7 +62,7 @@ st.sidebar.divider()
 st.sidebar.header("🔐 Accès Membre")
 if not st.session_state.logged_in:
     u = st.sidebar.text_input("Pseudo").strip()
-    p = st.sidebar.text_input("Mot de passe", type="password").strip()
+    p = st.sidebar.text_input("Pass", type="password").strip()
     if st.sidebar.button("Connexion"):
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
@@ -68,17 +73,13 @@ if not st.session_state.logged_in:
                 st.session_state.user_id = user_key
                 st.session_state.display_name = u
                 st.rerun()
-            else:
-                st.sidebar.error("Erreur d'identifiants")
-        except:
-            st.sidebar.error("Erreur GSheets")
+        except: pass
 else:
-    st.sidebar.success(f"Connecté : {st.session_state.display_name}")
+    st.sidebar.write(f"✅ Membre : {st.session_state.display_name}")
     if st.sidebar.button("Déconnexion"):
         st.session_state.logged_in = False
         st.rerun()
 
-# Réglages météo
 sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
 sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
@@ -94,10 +95,9 @@ api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon
 data_m = requests.get(api_url).json()
 
 # --- 6. AFFICHAGE PRINCIPAL ---
-# Le titre est maintenant garanti d'être à jour
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
-st.header(f"🌤️ Conditions à {st.session_state.nom_ville}")
+st.header(f"🌤️ Prévisions à {st.session_state.nom_ville}")
 if 'hourly' in data_m:
     cols = st.columns(4)
     for i, h in enumerate([10, 13, 16, 19]):
@@ -123,11 +123,11 @@ if st.session_state.logged_in:
             model.fit(df_user[['temp', 'wind', 'hum']], df_user['watts'])
             t13, v13, h13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
             pred = model.predict([[t13, v13, h13]])[0]
-            st.success(f"🎯 Estimation puissance à 13h : **{int(pred)} Watts**")
+            st.success(f"🎯 Puissance estimée à 13h : **{int(pred)} Watts**")
         else:
-            st.info(f"Ajoutez {3 - len(df_user)} sortie(s) pour activer l'IA.")
-        
-        with st.expander("📥 Ajouter une sortie CSV"):
+            st.info(f"Besoin de 3 sorties pour l'IA.")
+
+        with st.expander("📥 Ajouter CSV"):
             f_csv = st.file_uploader("Fichier CSV", type=['csv'], key="csv_up")
             if f_csv and st.button("Sauvegarder"):
                 df_new = pd.read_csv(f_csv)
@@ -136,18 +136,16 @@ if st.session_state.logged_in:
                 nl = pd.DataFrame([{'user': st.session_state.user_id, 'temp': data_m['hourly']['temperature_2m'][12], 'wind': data_m['hourly']['windspeed_10m'][12], 'hum': data_m['hourly']['relative_humidity_2m'][12], 'watts': w_moy, 'date': datetime.now().strftime("%Y-%m-%d")}])
                 conn.update(worksheet="Performances", data=pd.concat([df_all, nl], ignore_index=True))
                 st.rerun()
-    except: st.warning("IA en attente de connexion...")
+    except: st.warning("Connexion IA...")
 else:
-    st.info("👋 Connectez-vous pour l'analyse IA.")
+    st.info("Connectez-vous pour l'IA.")
 
 st.divider()
 
 # --- 8. SECTION CARTE ---
-if st.session_state.gpx_uploader:
+if st.session_state.pts_gpx:
     st.header(f"🗺️ Parcours : {st.session_state.nom_ville}")
-    gpx_parsed = gpxpy.parse(st.session_state.gpx_uploader)
-    pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
-    m = folium.Map(location=pts[0], zoom_start=12)
-    folium.PolyLine(pts, color="blue", weight=4).add_to(m)
+    m = folium.Map(location=st.session_state.pts_gpx[0], zoom_start=12)
+    folium.PolyLine(st.session_state.pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1000, height=400)
     
