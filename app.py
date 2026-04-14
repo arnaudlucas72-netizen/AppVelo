@@ -22,7 +22,7 @@ def obtenir_meteo(lat, lon):
     except: return None
 
 def geocoder_robuste(query, reverse=False):
-    """Utilise ArcGIS pour une géolocalisation fluide et sans blocage"""
+    """Utilise ArcGIS pour une géolocalisation fluide"""
     try:
         g = geocoder.arcgis(query, method='reverse' if reverse else 'geocode')
         if g and g.ok: return g
@@ -30,7 +30,6 @@ def geocoder_robuste(query, reverse=False):
     return None
 
 def afficher_blocs_score(data_meteo, titre_section):
-    """Affiche les 4 boîtes de score colorées (10h, 13h, 16h, 19h)"""
     if data_meteo and 'hourly' in data_meteo:
         st.subheader(titre_section)
         cols = st.columns(4)
@@ -39,7 +38,6 @@ def afficher_blocs_score(data_meteo, titre_section):
             v = data_meteo['hourly']['windspeed_10m'][h]
             p = data_meteo['hourly']['precipitation_probability'][h]
             
-            # Calcul du score de confort
             malus = ((12 - t) * 5 if t < 12 else 0) + v + (p / 2)
             score = int(max(0, min(100, 100 - malus)))
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
@@ -52,6 +50,8 @@ def afficher_blocs_score(data_meteo, titre_section):
                     <p style="margin:0; font-size: 0.9em;">🌡️ <b>{t}°C</b> | 💨 {v} km/h</p>
                 </div>
                 """, unsafe_allow_html=True)
+        return data_meteo['hourly'] # Pour réutilisation
+    return None
 
 # --- 2. BARRE LATÉRALE ---
 st.sidebar.header("📍 1. Météo Locale")
@@ -68,52 +68,75 @@ membre_on = st.sidebar.checkbox("Accès Membre")
 # --- 3. ZONE HAUTE : SCORES VILLE ---
 st.title(f"🚴 Coach IA : {ville_choisie}")
 g_local = geocoder_robuste(ville_choisie)
+lat_l, lon_l = (g_local.lat, g_local.lng) if g_local else (47.06, -0.88)
+if not g_local: st.sidebar.warning("⚠️ Mode secours actif")
 
-if g_local:
-    lat_l, lon_l = g_local.lat, g_local.lng
-else:
-    lat_l, lon_l = 47.06, -0.88 # Backup Cholet
-    st.sidebar.warning("⚠️ Géoloc locale indisponible (Mode secours)")
-
-w_local = obtenir_meteo(lat_l, lon_l)
-afficher_blocs_score(w_local, f"🌤️ Scores de confort à {ville_choisie}")
+w_local_h = afficher_blocs_score(obtenir_meteo(lat_l, lon_l), f"🌤️ Scores de confort à {ville_choisie}")
 
 st.divider()
 
-# --- 4. ZONE BASSE : PARCOURS & CARTE ---
+# --- 4. ZONE BASSE : PARCOURS ---
+lat_p, lon_p, v_p = None, None, "Soullans"
 if f_gpx:
     gpx_parsed = gpxpy.parse(f_gpx.getvalue())
     pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
-    
     if pts:
-        lat_s, lon_s = pts[0][0], pts[0][1]
-        g_s = geocoder_robuste([lat_s, lon_s], reverse=True)
-        # Priorité au nom de ville détecté, sinon Soullans
-        ville_gpx = getattr(g_s, 'city', None) or getattr(g_s, 'address', None) or "Soullans"
-        if "," in ville_gpx: ville_gpx = ville_gpx.split(",")[0]
+        lat_p, lon_p = pts[0][0], pts[0][1]
+        g_p = geocoder_robuste([lat_p, lon_p], reverse=True)
+        v_p = getattr(g_p, 'city', None) or "Soullans"
         
-        st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
-        w_gpx = obtenir_meteo(lat_s, lon_s)
-        afficher_blocs_score(w_gpx, f"📊 Scores de confort sur le parcours ({ville_gpx})")
+        st.header(f"🗺️ Analyse du Parcours : {v_p}")
+        w_p_h = afficher_blocs_score(obtenir_meteo(lat_p, lon_p), f"📊 Scores sur le parcours ({v_p})")
         
-        st.write("")
-        m = folium.Map(location=[lat_s, lon_s], zoom_start=12)
+        m = folium.Map(location=[lat_p, lon_p], zoom_start=12)
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
-        st_folium(m, width=1100, height=400, key=f"map_{ville_gpx}")
+        st_folium(m, width=1100, height=400, key=f"map_{v_p}")
 
-# --- 5. LOGIQUE BOUTON CRÉATION ---
+# --- 5. ESPACE MEMBRE & ENREGISTREMENT (CSV/GSheets) ---
 if membre_on:
-    if st.sidebar.button("➕ Créer ce compte", key="btn_create"):
-        u, p = st.session_state.get('u_field',''), st.session_state.get('p_field','')
+    u = st.sidebar.text_input("Pseudo", key="u_f")
+    p = st.sidebar.text_input("Pass", type="password", key="p_f")
+    
+    if st.sidebar.button("➕ Créer ce compte", key="btn_c"):
         if u and p:
             try:
                 u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-                new_data = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
-                conn.update(worksheet="Performances", data=pd.concat([df, new_data], ignore_index=True))
+                new_u = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                conn.update(worksheet="Performances", data=pd.concat([df, new_u], ignore_index=True))
                 st.sidebar.success("Compte créé !")
             except: st.sidebar.error("Erreur GSheets")
-    
-    st.sidebar.text_input("Pseudo", key="u_field")
-    st.sidebar.text_input("Pass", type="password", key="p_field")
+
+    if u and p:
+        st.divider()
+        st.header("📝 Enregistrer mon activité")
+        c1, c2, c3 = st.columns(3)
+        with c1: w_in = st.number_input("Watts Moyens", min_value=0, value=200)
+        with c2: hr_in = st.number_input("Cardio Moyen", min_value=0, value=140)
+        with c3: h_idx = st.selectbox("Heure de la sortie", [10, 13, 16, 19])
+        
+        if st.button("💾 Sauvegarder dans mon historique"):
+            try:
+                u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
+                
+                # Récupération de la météo au moment de l'heure choisie (priorité au parcours si GPX présent)
+                target_w = w_p_h if f_gpx and lat_p else w_local_h
+                
+                new_entry = {
+                    'user': u_id,
+                    'temp': target_w['temperature_2m'][h_idx],
+                    'wind': target_w['windspeed_10m'][h_idx],
+                    'hum': target_w['relative_humidity_2m'][h_idx],
+                    'watts': w_in,
+                    'cardio': hr_in, # Nouvelle colonne
+                    'date': datetime.now().strftime("%Y-%m-%d")
+                }
+                
+                updated_df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
+                conn.update(worksheet="Performances", data=updated_df)
+                st.success("Activité enregistrée ! Prêt pour l'analyse IA au prochain tour.")
+            except Exception as e:
+                st.error(f"Erreur d'enregistrement : {e}")
