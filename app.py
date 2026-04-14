@@ -108,7 +108,7 @@ if weather and 'hourly' in weather:
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE & IA (BOUTON TOUJOURS PRÉSENT) ---
+# --- 6. ESPACE MEMBRE & IA ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -119,21 +119,18 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
             u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
             
-            # 1. Bouton Créer un compte (Toujours là si Pseudo/Pass remplis)
+            # LE BOUTON + EST ICI : Toujours affiché si Pseudo/Pass sont écrits
             if st.sidebar.button("➕ Créer ce compte"):
                 if u_id in df['user'].astype(str).values:
-                    st.sidebar.error("Ce compte existe déjà.")
+                    st.sidebar.warning("Ce compte existe déjà.")
                 else:
-                    new_user = pd.DataFrame([{
-                        'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
-                        'date': datetime.now().strftime("%Y-%m-%d")
-                    }])
+                    new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
                     updated_df = pd.concat([df, new_user], ignore_index=True)
                     conn.update(worksheet="Performances", data=updated_df)
-                    st.sidebar.success("Compte créé !")
+                    st.sidebar.success("Compte créé avec succès !")
                     st.rerun()
 
-            # 2. Logique de connexion et IA
+            # Logique de connexion classique
             user_data = df[df['user'].astype(str) == u_id]
             if not user_data.empty:
                 st.sidebar.success(f"Connecté : {u}")
@@ -143,10 +140,8 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
                     t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
                     pred = model.predict([[t13, v13, h13]])[0]
                     st.metric("🎯 Puissance estimée (13h)", f"{int(pred)} Watts")
-                else:
-                    st.info(f"Besoin de 3 sorties pour l'IA.")
             else:
-                st.sidebar.warning("Utilisateur inconnu (Cliquez sur + pour créer)")
+                st.sidebar.info("Utilisateur inconnu. Utilisez le bouton + pour le créer.")
 
         except Exception as e:
             st.sidebar.error(f"Erreur GSheets : {e}")
