@@ -33,21 +33,17 @@ st.sidebar.divider()
 st.sidebar.header("🔓 3. Espace Membre")
 membre_on = st.sidebar.checkbox("Accès Membre")
 
-# --- 3. ZONE HAUTE : AVEC ROUE DE SECOURS GPS ---
+# --- 3. ZONE HAUTE : SCORES (AVEC ROUE DE SECOURS) ---
 st.title(f"🚴 Coach IA : {ville_choisie}")
 
-# Tentative de géolocalisation
 g_local = geocoder.osm(ville_choisie)
-
-# ROUE DE SECOURS : Si l'API geocoder échoue, on définit des coords manuellement
 if g_local and g_local.ok:
-    lat_local, lon_local = g_local.lat, g_local.lng
+    lat_l, lon_l = g_local.lat, g_local.lng
 else:
-    # Coordonnées par défaut (Cholet) si la recherche bugue
-    lat_local, lon_local = 47.06, -0.88
-    st.sidebar.warning("⚠️ Mode secours : Géolocalisation indisponible, affichage par défaut.")
+    lat_l, lon_l = 47.06, -0.88 # Cholet par défaut
+    st.sidebar.warning("⚠️ Géoloc locale indisponible (Mode secours)")
 
-w_local = obtenir_meteo(lat_local, lon_local)
+w_local = obtenir_meteo(lat_l, lon_l)
 
 if w_local and 'hourly' in w_local:
     st.subheader(f"🌤️ Scores de confort à {ville_choisie}")
@@ -57,7 +53,6 @@ if w_local and 'hourly' in w_local:
         v = w_local['hourly']['windspeed_10m'][h]
         p = w_local['hourly']['precipitation_probability'][h]
         
-        # Score visuel
         score = int(max(0, min(100, 100 - ((12-t)*5 if t<12 else 0) - v - (p/2))))
         couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
         
@@ -70,28 +65,34 @@ if w_local and 'hourly' in w_local:
                 <p style="margin:0; color: #666; font-size: 0.8em;">💨 {v} km/h | 🌧️ {p}%</p>
             </div>
             """, unsafe_allow_html=True)
-else:
-    st.error("Impossible de charger la météo.")
 
 st.divider()
 
-# --- 4. ZONE BASSE : GPX ---
+# --- 4. ZONE BASSE : GPX + RETOUR DU NOM (SOULLANS) ---
 if f_gpx:
     gpx_parsed = gpxpy.parse(f_gpx.getvalue())
     pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
+    
     if pts:
         lat_s, lon_s = pts[0][0], pts[0][1]
-        st.header("🗺️ Analyse du Parcours")
+        
+        # ON RÉCUPÈRE LE NOM DE LA VILLE DU GPX
+        g_s = geocoder.osm([lat_s, lon_s], method='reverse')
+        ville_gpx = g_s.city or g_s.town or g_s.village or "Lieu du parcours"
+        
+        st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
         
         w_gpx = obtenir_meteo(lat_s, lon_s)
-        if w_gpx:
+        if w_gpx and 'hourly' in w_gpx:
+            st.info(f"📊 Météo au départ de **{ville_gpx}**")
             m_cols = st.columns(4)
             for i, h in enumerate([10, 13, 16, 19]):
-                m_cols[i].metric(f"{h}h00", f"{w_gpx['hourly']['temperature_2m'][h]}°C", f"{w_gpx['hourly']['windspeed_10m'][h]} km/h")
+                tg, vg = w_gpx['hourly']['temperature_2m'][h], w_gpx['hourly']['windspeed_10m'][h]
+                m_cols[i].metric(f"{h}h00", f"{tg}°C", f"{vg} km/h")
         
         m = folium.Map(location=[lat_s, lon_s], zoom_start=12)
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
-        st_folium(m, width=1100, height=400, key="map_gpx_stable")
+        st_folium(m, width=1100, height=400, key=f"map_{ville_gpx}")
 
 # --- 5. ESPACE MEMBRE ---
 if membre_on:
