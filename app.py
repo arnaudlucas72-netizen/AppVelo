@@ -137,4 +137,4 @@ if st.session_state.pts_gpx:
     m = folium.Map(location=st.session_state.coords, zoom_start=12)
     folium.PolyLine(st.session_state.pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1200, height=500, key="map_final")
-
+    
