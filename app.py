@@ -22,22 +22,15 @@ def obtenir_meteo(lat, lon):
     except: return None
 
 def geocoder_robuste(query, reverse=False):
-    """Tentative de géocodage avec ArcGIS (plus stable qu'OSM)"""
+    """Utilise ArcGIS pour une géolocalisation fluide et sans blocage"""
     try:
-        if reverse:
-            # Pour le GPX (coordonnées -> nom)
-            g = geocoder.arcgis(query, method='reverse')
-        else:
-            # Pour la ville (nom -> coordonnées)
-            g = geocoder.arcgis(query)
-            
-        if g and g.ok:
-            return g
-    except Exception as e:
-        print(f"Erreur geocoder: {e}")
+        g = geocoder.arcgis(query, method='reverse' if reverse else 'geocode')
+        if g and g.ok: return g
+    except: pass
     return None
 
 def afficher_blocs_score(data_meteo, titre_section):
+    """Affiche les 4 boîtes de score colorées (10h, 13h, 16h, 19h)"""
     if data_meteo and 'hourly' in data_meteo:
         st.subheader(titre_section)
         cols = st.columns(4)
@@ -46,6 +39,7 @@ def afficher_blocs_score(data_meteo, titre_section):
             v = data_meteo['hourly']['windspeed_10m'][h]
             p = data_meteo['hourly']['precipitation_probability'][h]
             
+            # Calcul du score de confort
             malus = ((12 - t) * 5 if t < 12 else 0) + v + (p / 2)
             score = int(max(0, min(100, 100 - malus)))
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
@@ -78,7 +72,7 @@ g_local = geocoder_robuste(ville_choisie)
 if g_local:
     lat_l, lon_l = g_local.lat, g_local.lng
 else:
-    lat_l, lon_l = 47.06, -0.88 # Cholet
+    lat_l, lon_l = 47.06, -0.88 # Backup Cholet
     st.sidebar.warning("⚠️ Géoloc locale indisponible (Mode secours)")
 
 w_local = obtenir_meteo(lat_l, lon_l)
@@ -86,7 +80,7 @@ afficher_blocs_score(w_local, f"🌤️ Scores de confort à {ville_choisie}")
 
 st.divider()
 
-# --- 4. ZONE BASSE : SCORES & CARTE GPX ---
+# --- 4. ZONE BASSE : PARCOURS & CARTE ---
 if f_gpx:
     gpx_parsed = gpxpy.parse(f_gpx.getvalue())
     pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
@@ -94,7 +88,9 @@ if f_gpx:
     if pts:
         lat_s, lon_s = pts[0][0], pts[0][1]
         g_s = geocoder_robuste([lat_s, lon_s], reverse=True)
-        ville_gpx = g_s.city or g_s.town or g_s.village or "Soullans" if g_s else "Soullans"
+        # Priorité au nom de ville détecté, sinon Soullans
+        ville_gpx = getattr(g_s, 'city', None) or getattr(g_s, 'address', None) or "Soullans"
+        if "," in ville_gpx: ville_gpx = ville_gpx.split(",")[0]
         
         st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
         w_gpx = obtenir_meteo(lat_s, lon_s)
