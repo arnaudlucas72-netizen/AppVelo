@@ -16,8 +16,8 @@ st.set_page_config(page_title="Coach IA Multi-User", page_icon="🚴", layout="w
 # Connexion au Google Sheet
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-except:
-    st.error("⚠️ Connexion Google Sheets non configurée dans les Secrets.")
+except Exception as e:
+    st.error("⚠️ Connexion Google Sheets non configurée.")
 
 # --- FONCTIONS TECHNIQUES ---
 @st.cache_data
@@ -35,7 +35,7 @@ def calculer_score_meteo(t, v, p, sf, sv, sp):
     score -= (p * 1.2 * sp / 5)
     return max(0, min(100, int(score)))
 
-# --- RÉCUPÉRATION MÉTÉO (VISIBLE PAR TOUS) ---
+# --- RÉCUPÉRATION MÉTÉO ---
 st.sidebar.header("⚙️ Configuration")
 nom_ville = st.sidebar.text_input("📍 Ville", "Cholet")
 sf, sv, sp = st.sidebar.slider("🌡️ Sens. Froid", 0,10,5), st.sidebar.slider("💨 Sens. Vent", 0,10,5), st.sidebar.slider("🌧️ Sens. Pluie", 0,10,7)
@@ -47,31 +47,35 @@ data_m = requests.get(api_url).json()
 # --- PAGE PRINCIPALE ---
 st.title("🚴 Assistant Cycliste & IA")
 
-# --- 1. SECTION IA (CONDITIONNELLE AU NOM) ---
+# --- 1. SECTION IA (CONNEXION) ---
 st.sidebar.divider()
 user_name = st.sidebar.text_input("👤 Ton Prénom (pour l'IA)", "").strip().capitalize()
+
+# Initialisation de df_all pour éviter l'erreur NameError
+df_all = pd.DataFrame(columns=['user', 'temp', 'wind', 'hum', 'watts', 'date'])
 
 if user_name:
     st.header(f"🤖 Espace IA de {user_name}")
     
-    # Chargement des données
     try:
+        # Lecture des données
         df_all = conn.read(worksheet="Performances")
+        # Nettoyage au cas où le sheet a des lignes vides
+        df_all = df_all.dropna(how='all')
         df_user = df_all[df_all['user'] == user_name]
     except:
         df_user = pd.DataFrame()
 
     col_ia1, col_ia2 = st.columns([1, 2])
     
-    # Calcul Fiabilité
-    fiabilite = 0
     if not df_user.empty and len(df_user) >= 3:
+        # Calcul Fiabilité
         t_bins = pd.cut(df_user['temp'], bins=[-10, 10, 22, 50], labels=['Froid', 'Bon', 'Chaud'])
         w_bins = pd.cut(df_user['wind'], bins=[0, 15, 100], labels=['Calme', 'Venté'])
         nb_remplies = len(df_user.groupby([t_bins, w_bins], observed=False).size().reset_index(name='c').query('c > 0'))
         fiabilite = min(100, int((nb_remplies / 6) * 100))
         
-        # Entraînement & Prédiction
+        # IA
         X = df_user[['temp', 'wind', 'hum']]
         y = df_user['watts']
         model = RandomForestRegressor(n_estimators=100, random_state=42)
@@ -86,33 +90,42 @@ if user_name:
         with col_ia2:
             st.success(f"🎯 **Estimation à 13h** : **{int(pred)} Watts**")
     else:
-        st.info("💡 L'IA s'activera après avoir enregistré au moins 3 sorties avec ton prénom.")
+        st.info("💡 Enregistre encore quelques sorties pour activer l'IA.")
 
     # Zone d'enregistrement
-    with st.expander("📥 Enregistrer une nouvelle sortie dans ton profil"):
+    with st.expander("📥 Enregistrer une nouvelle sortie"):
         f_csv = st.file_uploader("Charger CSV", type=['csv'], key="csv_upload")
         if f_csv and st.button(f"Mémoriser pour {user_name}"):
             df_new = pd.read_csv(f_csv)
             df_new.columns = [c.lower().strip() for c in df_new.columns]
+            
+            # Calcul des moyennes de la sortie
+            watts_moy = df_new[df_new['watts']>0]['watts'].mean()
+            temp_moy = df_new[df_new['watts']>0]['temp'].mean() if 'temp' in df_new.columns else data_m['hourly']['temperature_2m'][12]
+            
             nouvelle_ligne = pd.DataFrame([{
                 'user': user_name,
-                'temp': df_new[df_new['watts']>0]['temp'].mean(),
+                'temp': temp_moy,
                 'wind': data_m['hourly']['windspeed_10m'][12],
                 'hum': data_m['hourly']['relative_humidity_2m'][12],
-                'watts': df_new[df_new['watts']>0]['watts'].mean(),
+                'watts': watts_moy,
                 'date': datetime.now().strftime("%Y-%m-%d")
             }])
+            
+            # Reconstruction sécurisée du dataframe final
             df_final = pd.concat([df_all, nouvelle_ligne], ignore_index=True)
+            
+            # Envoi vers Google Sheets
             conn.update(worksheet="Performances", data=df_final)
-            st.success("Donnée enregistrée !")
+            st.success("Sortie sauvegardée dans le Cloud !")
             st.cache_data.clear()
             st.rerun()
 else:
-    st.info("👈 Entre ton prénom dans la barre latérale pour activer ton coach IA personnel.")
+    st.info("👈 Entre ton prénom dans la barre latérale pour accéder à ton IA.")
 
 st.divider()
 
-# --- 2. PRÉVISIONS MÉTÉO (TOUJOURS VISIBLES) ---
+# --- 2. MÉTÉO ---
 st.header(f"🌤️ Prévisions Météo : {nom_ville}")
 if 'hourly' in data_m:
     cols = st.columns(4)
@@ -123,11 +136,9 @@ if 'hourly' in data_m:
             color = "green" if score > 75 else "orange" if score > 45 else "red"
             st.markdown(f"**{h}h00**")
             st.markdown(f"<h2 style='color:{color};'>{score}/100</h2>", unsafe_allow_html=True)
-            st.caption(f"{t}°C | {v}km/h | {p}% pluie")
+            st.caption(f"{t}°C | {v}km/h")
 
-st.divider()
-
-# --- 3. CARTE GPX ---
+# --- 3. GPX ---
 f_gpx = st.file_uploader("🗺️ Tracer un parcours (GPX)", type=['gpx'])
 if f_gpx:
     gpx = gpxpy.parse(f_gpx)
