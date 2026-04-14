@@ -13,7 +13,7 @@ import joblib
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Coach Vélo IA Pro", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="Coach IA Cycliste", page_icon="🚴", layout="wide")
 
 # --- FONCTIONS TECHNIQUES ---
 @st.cache_data
@@ -33,24 +33,22 @@ def calculer_score_meteo(t, v, p, sf, sv, sp):
 
 # --- LOGIQUE IA & DIVERSITÉ ---
 def analyser_diversite(df):
-    if df.empty: return 0
-    # On crée des catégories pour vérifier la couverture des conditions
+    if df.empty or not all(col in df.columns for col in ['temp', 'wind', 'hum']):
+        return 0
+    
+    # Création des catégories (Buckets)
     t_bins = pd.cut(df['temp'], bins=[-10, 10, 22, 50], labels=['Froid', 'Bon', 'Chaud'])
     w_bins = pd.cut(df['wind'], bins=[0, 15, 100], labels=['Calme', 'Venté'])
     h_bins = pd.cut(df['hum'], bins=[0, 50, 100], labels=['Sec', 'Humide'])
     
-    # Calcul du nombre de combinaisons uniques explorées
-    combis = df.groupby([t_bins, w_bins, h_bins], observed=False).size()
-    nb_remplies = (combis > 0).sum()
-    
-    # Score de fiabilité : 12 combinaisons possibles (3x2x2)
-    score = int((nb_remplies / 12) * 100)
-    return min(100, score)
+    # On compte les combinaisons uniques remplies sur 12 possibles (3x2x2)
+    nb_remplies = len(df.groupby([t_bins, w_bins, h_bins], observed=False).size().reset_index(name='count').query('count > 0'))
+    return min(100, int((nb_remplies / 12) * 100))
 
 def entrainer_ia_evoluee(df_nouveau, t_ext, v_ext, h_ext):
     history_file = 'historique_perf.csv'
     
-    # Préparation de la nouvelle donnée
+    # Calcul de la moyenne de la sortie actuelle
     stats_sortie = {
         'temp': df_nouveau[df_nouveau['watts'] > 0]['temp'].mean() if 'temp' in df_nouveau.columns else t_ext,
         'wind': v_ext,
@@ -60,84 +58,101 @@ def entrainer_ia_evoluee(df_nouveau, t_ext, v_ext, h_ext):
     new_entry = pd.DataFrame([stats_sortie])
     
     if os.path.exists(history_file):
-        hist_df = pd.read_csv(history_file)
-        hist_df = pd.concat([hist_df, new_entry]).drop_duplicates()
+        try:
+            hist_df = pd.read_csv(history_file)
+            # SÉCURITÉ : Si l'ancien fichier n'a pas les colonnes 'wind' ou 'hum', on le reset
+            if 'wind' not in hist_df.columns or 'hum' not in hist_df.columns:
+                hist_df = new_entry
+            else:
+                hist_df = pd.concat([hist_df, new_entry], ignore_index=True).drop_duplicates()
+        except:
+            hist_df = new_entry
     else:
         hist_df = new_entry
         
     hist_df.to_csv(history_file, index=False)
     
-    # Entraînement sur les 3 facteurs
-    X = hist_df[['temp', 'wind', 'hum']]
-    y = hist_df['watts']
-    
-    if len(hist_df) > 1:
+    # Entraînement uniquement si on a assez de données
+    if len(hist_df) >= 2:
+        X = hist_df[['temp', 'wind', 'hum']]
+        y = hist_df['watts']
         model = RandomForestRegressor(n_estimators=100, random_state=42)
         model.fit(X, y)
         joblib.dump(model, 'modele_velo_v2.pkl')
     return hist_df
 
 # --- RÉCUPÉRATION MÉTÉO ---
-nom_ville = st.sidebar.text_input("📍 Ville", "Cholet")
+st.sidebar.header("⚙️ Paramètres")
+nom_ville = st.sidebar.text_input("📍 Ville de référence", "Cholet")
 sf, sv, sp = st.sidebar.slider("🌡️ Sens. Froid", 0,10,5), st.sidebar.slider("💨 Sens. Vent", 0,10,5), st.sidebar.slider("🌧️ Sens. Pluie", 0,10,7)
 
 lat, lon, _ = obtenir_coords(nom_ville)
 api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
 data_m = requests.get(api_url).json()
 
-# --- INTERFACE IA (TOUJOURS VISIBLE) ---
-st.title("🚴 Coach IA : Analyse & Prédiction")
+# --- INTERFACE IA (HEADER) ---
+st.title("🚴 Coach IA : Intelligence Contextuelle")
 
 hist_file = 'historique_perf.csv'
-col_info1, col_info2 = st.columns([1, 2])
+col_ia1, col_ia2 = st.columns([1, 2])
 
 if os.path.exists(hist_file):
     df_hist = pd.read_csv(hist_file)
     fiabilite = analyser_diversite(df_hist)
     
-    with col_info1:
-        st.metric("Fiabilité IA (Diversité)", f"{fiabilite}%")
+    with col_ia1:
+        st.metric("Fiabilité (Couverture Météo)", f"{fiabilite}%")
         st.progress(fiabilite / 100)
-        st.caption(f"Basé sur {len(df_hist)} conditions météo distinctes.")
+        st.caption(f"Données enregistrées : {len(df_hist)} sorties.")
 
     if os.path.exists('modele_velo_v2.pkl'):
-        model = joblib.load('modele_velo_v2.pkl')
-        t_13, v_13, h_13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
-        pred = model.predict([[t_13, v_13, h_13]])[0]
-        with col_info2:
-            st.success(f"🎯 **Estimation IA pour 13h** ({t_13}°C, {v_13}km/h vent) : **{int(pred)} Watts**")
-            if fiabilite < 70:
-                st.info("💡 Pour augmenter la fiabilité, enregistrez des sorties sous d'autres météos (froid, vent fort, etc).")
+        try:
+            model = joblib.load('modele_velo_v2.pkl')
+            # Prédiction basée sur la météo de 13h
+            t13, v13, h13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
+            pred = model.predict([[t13, v13, h13]])[0]
+            with col_ia2:
+                st.success(f"🎯 **Estimation Performance à 13h** : **{int(pred)} Watts**")
+                st.info(f"Conditions prévues : {t13}°C, {v13}km/h de vent, {h13}% d'humidité.")
+        except:
+            st.error("Erreur de chargement du modèle. Enregistrez une nouvelle sortie.")
 else:
-    st.warning("🤖 L'IA est en attente de données. Chargez un CSV pour l'initialiser.")
+    st.warning("🤖 L'IA n'a pas encore de mémoire. Importez vos fichiers CSV ci-dessous pour l'entraîner.")
 
 st.divider()
 
-# --- ZONE DE CHARGEMENT ---
-col_f1, col_f2 = st.columns(2)
-with col_f1:
-    f_gpx = st.file_uploader("🗺️ Charger un tracé (GPX)", type=['gpx'])
-with col_f2:
-    f_csv = st.file_uploader("📈 Mémoriser une sortie (CSV)", type=['csv'])
+# --- CHARGEMENT ---
+c1, c2 = st.columns(2)
+with c1:
+    f_gpx = st.file_uploader("🗺️ Charger tracé (GPX)", type=['gpx'])
+with c2:
+    f_csv = st.file_uploader("📈 Analyser & Mémoriser (CSV)", type=['csv'])
 
 if f_csv:
     df_new = pd.read_csv(f_csv)
     df_new.columns = [c.lower().strip() for c in df_new.columns]
-    if st.button("🧠 Enregistrer cette expérience"):
-        # On utilise la météo actuelle pour le vent/humidité si non présents dans le CSV
+    
+    # Stats rapides de la sortie
+    if 'watts' in df_new.columns:
+        st.write(f"📊 Puissance moyenne détectée : **{int(df_new['watts'].mean())}W**")
+        
+    if st.button("🧠 Enregistrer cette expérience dans l'IA"):
+        # On récupère la météo du moment (proche de midi) pour contextualiser
         t_now = data_m['hourly']['temperature_2m'][12]
         v_now = data_m['hourly']['windspeed_10m'][12]
         h_now = data_m['hourly']['relative_humidity_2m'][12]
         entrainer_ia_evoluee(df_new, t_now, v_now, h_now)
         st.rerun()
 
-# --- RÉSUMÉ MÉTÉO & CARTOGRAPHIE ---
-st.header(f"🌤️ Prévisions à {nom_ville}")
-c_met = st.columns(4)
-for i, h in enumerate([10, 13, 16, 19]):
+# --- PRÉVISIONS & CARTE ---
+st.header(f"🌤️ État du ciel à {nom_ville}")
+cols_m = st.columns(4)
+creneaux = [10, 13, 16, 19]
+for i, h in enumerate(creneaux):
     t, v, p = data_m['hourly']['temperature_2m'][h], data_m['hourly']['windspeed_10m'][h], data_m['hourly']['precipitation_probability'][h]
     sc = calculer_score_meteo(t, v, p, sf, sv, sp)
-    c_met[i].metric(f"{h}h00", f"{sc}/100", f"{t}°C | {v}km/h")
+    with cols_m[i]:
+        st.metric(f"{h}h00", f"{sc}/100", f"{t}°C | {v}km/h")
 
 if f_gpx:
     gpx = gpxpy.parse(f_gpx)
