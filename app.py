@@ -13,13 +13,21 @@ import hashlib
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", layout="wide", page_icon="🚴")
 
-# Initialisation
+# Initialisation robuste
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
 if 'coords' not in st.session_state:
     st.session_state.coords = (47.06, -0.88)
 if 'pts_gpx' not in st.session_state:
     st.session_state.pts_gpx = None
+
+# Fonction de mise à jour manuelle
+def update_city():
+    nouvelle_saisie = st.session_state.city_input_widget
+    g = geocoder.osm(nouvelle_saisie)
+    if g and g.ok:
+        st.session_state.coords = (g.lat, g.lng)
+        st.session_state.nom_ville = nouvelle_saisie
 
 # --- 2. LOGIQUE GPX ---
 st.sidebar.header("🌍 Configuration")
@@ -29,28 +37,23 @@ if f_gpx is not None:
     try:
         gpx_parsed = gpxpy.parse(f_gpx.getvalue())
         pts = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
-        
         if pts and pts != st.session_state.pts_gpx:
             st.session_state.pts_gpx = pts
             st.session_state.coords = (pts[0][0], pts[0][1])
-            # Détection forcée
             g_inv = geocoder.osm(st.session_state.coords, method='reverse')
             if g_inv and g_inv.ok:
-                nouvelle_ville = g_inv.city if g_inv.city else g_inv.town
-                if nouvelle_ville:
-                    st.session_state.nom_ville = nouvelle_ville
+                st.session_state.nom_ville = g_inv.city if g_inv.city else g_inv.town
             st.rerun()
     except Exception as e:
         st.sidebar.error(f"Erreur GPX : {e}")
 
-# Champ ville avec clé dynamique pour forcer la mise à jour
-ville_input = st.sidebar.text_input("📍 Ville / Lieu", value=st.session_state.nom_ville, key=f"v_{st.session_state.nom_ville}")
-if ville_input != st.session_state.nom_ville:
-    g = geocoder.osm(ville_input)
-    if g and g.ok:
-        st.session_state.coords = (g.lat, g.lng)
-        st.session_state.nom_ville = ville_input
-        st.rerun()
+# CHAMP VILLE (Utilise on_change pour être certain que Streamlit valide la saisie)
+st.sidebar.text_input(
+    "📍 Ville active", 
+    value=st.session_state.nom_ville, 
+    key="city_input_widget",
+    on_change=update_city
+)
 
 # --- 3. RÉCUPÉRATION MÉTÉO ---
 def obtenir_meteo(lat, lon):
@@ -64,12 +67,11 @@ weather = obtenir_meteo(st.session_state.coords[0], st.session_state.coords[1])
 
 # --- 4. RÉGLAGES ---
 st.sidebar.divider()
-st.sidebar.subheader("⚙️ Confort")
-sf = st.sidebar.slider("🌡️ Froid", 0, 10, 5)
-sv = st.sidebar.slider("💨 Vent", 0, 10, 5)
-sp = st.sidebar.slider("🌧️ Pluie", 0, 10, 7)
+sf = st.sidebar.slider("🌡️ Sensibilité Froid", 0, 10, 5)
+sv = st.sidebar.slider("💨 Sensibilité Vent", 0, 10, 5)
+sp = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
-# --- 5. AFFICHAGE (DESIGN ORIGINAL REPRIS) ---
+# --- 5. AFFICHAGE PRINCIPAL ---
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
 if weather and 'hourly' in weather:
@@ -92,7 +94,7 @@ if weather and 'hourly' in weather:
 
 st.divider()
 
-# --- 6. MEMBRE & CRÉATION ---
+# --- 6. ESPACE MEMBRE & CRÉATION ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -105,12 +107,15 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             try:
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-                new_row = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
-                conn.update(worksheet="Performances", data=pd.concat([df, new_row], ignore_index=True))
-                st.sidebar.success("Compte créé !")
-            except: st.sidebar.error("Erreur GSheets")
+                if u_id not in df['user'].astype(str).values:
+                    new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                    conn.update(worksheet="Performances", data=pd.concat([df, new_user], ignore_index=True))
+                    st.sidebar.success("Compte créé !")
+                else:
+                    st.sidebar.warning("Existe déjà.")
+            except: st.sidebar.error("Erreur GSheets.")
 
-        # LOGIQUE IA
+        # IA
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
             df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
