@@ -34,7 +34,7 @@ if f_gpx is not None:
             st.session_state.pts_gpx = pts
             st.session_state.coords = (pts[0][0], pts[0][1])
             
-            # Tentative de détection du nom de la ville
+            # Détection immédiate du nom
             try:
                 g_inv = geocoder.osm(st.session_state.coords, method='reverse')
                 if g_inv and g_inv.ok:
@@ -43,7 +43,7 @@ if f_gpx is not None:
                         st.session_state.nom_ville = ville_detectee
             except:
                 pass
-            st.rerun()
+            st.rerun() # Force la mise à jour globale
     except Exception as e:
         st.sidebar.error(f"Erreur GPX : {e}")
 
@@ -75,6 +75,7 @@ sv = st.sidebar.slider("💨 Sensibilité Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
 # --- 5. AFFICHAGE PRINCIPAL ---
+# On utilise la variable de session directement pour être sûr qu'elle est à jour
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
 if weather and 'hourly' in weather:
@@ -88,7 +89,6 @@ if weather and 'hourly' in weather:
         vent = weather['hourly']['windspeed_10m'][h]
         pluie = weather['hourly']['precipitation_probability'][h]
         
-        # Calcul du score
         malus_froid = (12 - temp) * sf if temp < 12 else 0
         malus_vent = vent * (sv / 5)
         malus_pluie = pluie * (sp / 5)
@@ -108,7 +108,7 @@ if weather and 'hourly' in weather:
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE & IA ---
+# --- 6. ESPACE MEMBRE & IA (Bouton + TOUJOURS visible) ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -119,18 +119,18 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
             u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
             
-            # LE BOUTON + EST ICI : Toujours affiché si Pseudo/Pass sont écrits
+            # LE BOUTON + EST ICI (Inconditionnel si les champs sont remplis)
             if st.sidebar.button("➕ Créer ce compte"):
                 if u_id in df['user'].astype(str).values:
-                    st.sidebar.warning("Ce compte existe déjà.")
+                    st.sidebar.warning("Existe déjà")
                 else:
-                    new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
-                    updated_df = pd.concat([df, new_user], ignore_index=True)
+                    new_row = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                    updated_df = pd.concat([df, new_row], ignore_index=True)
                     conn.update(worksheet="Performances", data=updated_df)
-                    st.sidebar.success("Compte créé avec succès !")
+                    st.sidebar.success("Compte créé !")
                     st.rerun()
 
-            # Logique de connexion classique
+            # Vérification de connexion
             user_data = df[df['user'].astype(str) == u_id]
             if not user_data.empty:
                 st.sidebar.success(f"Connecté : {u}")
@@ -141,7 +141,7 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
                     pred = model.predict([[t13, v13, h13]])[0]
                     st.metric("🎯 Puissance estimée (13h)", f"{int(pred)} Watts")
             else:
-                st.sidebar.info("Utilisateur inconnu. Utilisez le bouton + pour le créer.")
+                st.sidebar.info("Inconnu. Cliquez sur + pour créer.")
 
         except Exception as e:
             st.sidebar.error(f"Erreur GSheets : {e}")
