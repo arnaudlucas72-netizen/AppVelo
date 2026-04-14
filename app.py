@@ -22,13 +22,19 @@ def obtenir_meteo(lat, lon):
     except: return None
 
 def geocoder_robuste(query, reverse=False):
-    """Tentative de géocodage avec relance en cas d'échec"""
-    for _ in range(2): # 2 tentatives
-        try:
-            g = geocoder.osm(query, method='reverse' if reverse else 'geocode')
-            if g and g.ok: return g
-        except: pass
-        time.sleep(1) # Petit délai entre les essais
+    """Tentative de géocodage avec ArcGIS (plus stable qu'OSM)"""
+    try:
+        if reverse:
+            # Pour le GPX (coordonnées -> nom)
+            g = geocoder.arcgis(query, method='reverse')
+        else:
+            # Pour la ville (nom -> coordonnées)
+            g = geocoder.arcgis(query)
+            
+        if g and g.ok:
+            return g
+    except Exception as e:
+        print(f"Erreur geocoder: {e}")
     return None
 
 def afficher_blocs_score(data_meteo, titre_section):
