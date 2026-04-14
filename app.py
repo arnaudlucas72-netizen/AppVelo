@@ -108,7 +108,7 @@ if weather and 'hourly' in weather:
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE & IA ---
+# --- 6. ESPACE MEMBRE & IA (AVEC CRÉATION DE COMPTE) ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -122,8 +122,9 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             user_data = df[df['user'].astype(str) == u_id]
             
             if not user_data.empty:
-                st.success(f"Cycliste reconnu : {u}")
+                st.sidebar.success(f"Cycliste reconnu : {u}")
                 if len(user_data) >= 3:
+                    st.subheader(f"🤖 Analyse IA pour {u}")
                     model = RandomForestRegressor(n_estimators=100, random_state=42)
                     model.fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
                     t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
@@ -132,20 +133,20 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
                 else:
                     st.info(f"Besoin de 3 sorties pour l'IA (Actuel : {len(user_data)})")
             else:
-                # PARTIE COMPTE : Si l'utilisateur n'existe pas
+                # Bloc Ajouté : Création de compte
                 st.sidebar.warning("Utilisateur inconnu")
                 if st.sidebar.button("➕ Créer ce compte"):
-                    new_user = pd.DataFrame([{
+                    new_row = pd.DataFrame([{
                         'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
                         'date': datetime.now().strftime("%Y-%m-%d")
                     }])
-                    updated_df = pd.concat([df, new_user], ignore_index=True)
+                    updated_df = pd.concat([df, new_row], ignore_index=True)
                     conn.update(worksheet="Performances", data=updated_df)
                     st.sidebar.success("Compte créé ! Re-connectez-vous.")
                     st.rerun()
 
         except Exception as e:
-            st.sidebar.error(f"Erreur : {e}")
+            st.sidebar.error(f"Erreur de connexion aux données : {e}")
 
 # --- 7. CARTE ---
 if st.session_state.pts_gpx:
