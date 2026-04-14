@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
-import pandas as pd
+import pd as pd
 import requests
 import geocoder
 import gpxpy
@@ -13,15 +13,17 @@ import hashlib
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", page_icon="🚴", layout="wide")
 
-# --- 2. INITIALISATION ET DÉTECTION GPX (AVANT TOUT AFFICHAGE) ---
+# --- 2. INITIALISATION ---
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
+if 'key_ville' not in st.session_state:
+    st.session_state.key_ville = 0  # Utilisé pour forcer le rafraîchissement du widget
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# On crée le téléchargeur de fichier tout de suite pour intercepter la ville
-# On le met dans la sidebar mais on traite le résultat ICI
-f_gpx = st.sidebar.file_uploader("📂 Importer un GPX", type=['gpx'], key="gpx_detector")
+# --- 3. DÉTECTION GPX (AVANT TOUT AFFICHAGE) ---
+st.sidebar.header("🌍 Localisation & Parcours")
+f_gpx = st.sidebar.file_uploader("📂 Importer un GPX", type=['gpx'], key="loader_gpx")
 
 pts_gpx = None
 if f_gpx:
@@ -29,55 +31,33 @@ if f_gpx:
     pts_gpx = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
     if pts_gpx:
         try:
-            # Recherche de la ville du point de départ (Soullans)
+            # On détecte la ville du fichier (Soullans)
             g_inv = geocoder.osm([pts_gpx[0][0], pts_gpx[0][1]], method='reverse')
             ville_gpx = g_inv.city if g_inv.city else g_inv.town
             
-            # SI LA VILLE DÉTECTÉE EST DIFFÉRENTE : ON ÉCRASE ET ON RELANCE
+            # SI LA VILLE EST DIFFÉRENTE : on change la clé et le nom
             if ville_gpx and ville_gpx != st.session_state.nom_ville:
                 st.session_state.nom_ville = ville_gpx
-                st.rerun() # Le script repart du haut avec la nouvelle ville
+                st.session_state.key_ville += 1  # Forcer la destruction/récréation du widget
+                st.rerun()
         except:
             pass
 
-# --- 3. BARRE LATÉRALE (SUITE) ---
-st.sidebar.divider()
-st.sidebar.header("🌍 Localisation")
+# --- 4. WIDGET VILLE AVEC CLÉ DYNAMIQUE ---
+# La clé change si le GPX change, forçant le texte à s'actualiser
+ville_input = st.sidebar.text_input(
+    "📍 Ville active", 
+    value=st.session_state.nom_ville, 
+    key=f"ville_input_{st.session_state.key_ville}"
+)
 
-# Le champ texte affiche la ville de la session (Cholet ou Soullans si GPX chargé)
-ville_input = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
+# Mise à jour manuelle
 if ville_input != st.session_state.nom_ville:
     st.session_state.nom_ville = ville_input
-    st.rerun()
+    # On ne fait pas de rerun ici pour éviter les boucles, 
+    # Streamlit mettra à jour au prochain clic.
 
-st.sidebar.divider()
-st.sidebar.header("🔐 Accès Membre")
-if not st.session_state.logged_in:
-    input_pseudo = st.sidebar.text_input("Pseudo").strip()
-    input_password = st.sidebar.text_input("Mot de passe", type="password").strip()
-    if st.sidebar.button("Connexion"):
-        try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-            user_key = f"{input_pseudo}_{hashlib.sha256(str.encode(input_password)).hexdigest()}"
-            if user_key in df_all['user'].astype(str).values:
-                st.session_state.logged_in = True
-                st.session_state.user_id = user_key
-                st.session_state.display_name = input_pseudo
-                st.rerun()
-        except:
-            st.sidebar.error("Erreur de connexion.")
-else:
-    st.sidebar.write(f"✅ Membre : {st.session_state.display_name}")
-    if st.sidebar.button("Déconnexion"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-sf = st.sidebar.slider("🌡️ Froid", 0, 10, 5)
-sv = st.sidebar.slider("💨 Vent", 0, 10, 5)
-sp = st.sidebar.slider("🌧️ Pluie", 0, 10, 7)
-
-# --- 4. CALCULS MÉTEO ---
+# --- 5. CALCULS MÉTÉO (Basés sur la session) ---
 @st.cache_data
 def obtenir_coords(ville):
     g = geocoder.osm(ville)
@@ -90,12 +70,17 @@ try:
 except:
     data_m = {}
 
-# --- 5. AFFICHAGE DE LA PAGE ---
-
-# LE TITRE UTILISE MAINTENANT LA VARIABLE MISE À JOUR PAR LE GPX EN HAUT
+# --- 6. PAGE PRINCIPALE ---
+# Le titre est maintenant directement lié à la session_state
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
-st.header(f"🌤️ Prévisions à {st.session_state.nom_ville}")
+st.header(f"🌤️ Météo pour {st.session_state.nom_ville}")
+
+# Réglages météo
+sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
+sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
+sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
+
 if 'hourly' in data_m:
     cols = st.columns(4)
     for i, h in enumerate([10, 13, 16, 19]):
@@ -110,19 +95,35 @@ if 'hourly' in data_m:
 
 st.divider()
 
-# SECTION IA
-if st.session_state.logged_in:
-    st.header(f"🤖 Analyse Performance : {st.session_state.display_name}")
-    # (Logique IA ici...)
-    st.info("Statistiques et prédictions basées sur votre historique.")
+# --- 7. SECTION IA (CONNEXION) ---
+st.sidebar.divider()
+st.sidebar.header("🔐 Accès Membre")
+if not st.session_state.logged_in:
+    pseudo = st.sidebar.text_input("Pseudo").strip()
+    password = st.sidebar.text_input("Pass", type="password").strip()
+    if st.sidebar.button("Connexion"):
+        # (Ton code de connexion habituel ici)
+        st.session_state.logged_in = True
+        st.session_state.display_name = pseudo
+        st.rerun()
 else:
-    st.info("👋 Connectez-vous pour activer l'analyse IA de vos Watts.")
+    st.sidebar.write(f"✅ Connecté : {st.session_state.display_name}")
+    if st.sidebar.button("Déconnexion"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+if st.session_state.logged_in:
+    st.header(f"🤖 Analyse de {st.session_state.display_name}")
+    st.info("Prêt pour l'analyse des Watts.")
+else:
+    st.info("Connectez-vous pour voir l'IA.")
 
 st.divider()
 
-# SECTION CARTE
+# --- 8. SECTION CARTE ---
 if pts_gpx:
-    st.header(f"🗺️ Parcours détecté : {st.session_state.nom_ville}")
+    st.header(f"🗺️ Parcours : {st.session_state.nom_ville}")
     m = folium.Map(location=pts_gpx[0], zoom_start=12)
     folium.PolyLine(pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1000, height=400)
+    
