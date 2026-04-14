@@ -22,6 +22,7 @@ def obtenir_meteo(lat, lon):
     except: return None
 
 def geocoder_robuste(query, reverse=False):
+    """Utilise ArcGIS pour éviter les blocages de géolocalisation"""
     try:
         g = geocoder.arcgis(query, method='reverse' if reverse else 'geocode')
         if g and g.ok: return g
@@ -36,7 +37,8 @@ def afficher_blocs_score(data_meteo, titre_section):
             t = data_meteo['hourly']['temperature_2m'][h]
             v = data_meteo['hourly']['windspeed_10m'][h]
             p = data_meteo['hourly']['precipitation_probability'][h]
-            malus = ((12 - t) * 5 if t < 12 else 0) + v + (p / 2)
+            # Calcul du score : Malus si froid, malus si vent, malus si pluie
+            malus = ((12 - t) * 5 if t < 12 else 0) + (v * 1.2) + (p / 2)
             score = int(max(0, min(100, 100 - malus)))
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
             with cols[i]:
@@ -62,10 +64,32 @@ st.sidebar.divider()
 st.sidebar.header("🔓 3. Espace Membre")
 membre_on = st.sidebar.checkbox("Accès Membre")
 
-u, p = "", ""
+u, p, apprentissage_total = "", "", 0
 if membre_on:
     u = st.sidebar.text_input("Pseudo", key="u_f")
     p = st.sidebar.text_input("Pass", type="password", key="p_f")
+    
+    if u and p:
+        try:
+            u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            df_full = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
+            user_data = df_full[df_full['user'] == u_id]
+            
+            if not user_data.empty:
+                # LOGIQUE D'APPRENTISSAGE BASÉE SUR LA DIVERSITÉ
+                s_vol = min(len(user_data) * 2, 25) # Volume (25%)
+                s_meteo = min((user_data['temp'].max() - user_data['temp'].min()) * 2, 40) # Delta Temp (40%)
+                s_vent = min((user_data['wind'].max() - user_data['wind'].min()) * 2, 20) # Delta Vent (20%)
+                s_geo = 15 if len(user_data) > 5 else 5 # Geo (15%)
+                
+                apprentissage_total = int(min(100, s_vol + s_meteo + s_vent + s_geo))
+                st.sidebar.divider()
+                st.sidebar.write(f"🧠 **Fiabilité de l'IA : {apprentissage_total}%**")
+                st.sidebar.progress(apprentissage_total / 100)
+                st.sidebar.caption(f"{len(user_data)} sorties enregistrées")
+        except: pass
+
     if st.sidebar.button("➕ Créer ce compte"):
         if u and p:
             try:
@@ -77,7 +101,7 @@ if membre_on:
                 st.sidebar.success("Compte créé !")
             except: st.sidebar.error("Erreur GSheets")
 
-# --- 3. AFFICHAGE SCORES ---
+# --- 3. ZONE PRINCIPALE : SCORES VILLE ---
 st.title(f"🚴 Coach IA : {ville_choisie}")
 g_local = geocoder_robuste(ville_choisie)
 lat_l, lon_l = (g_local.lat, g_local.lng) if g_local else (47.06, -0.88)
@@ -85,7 +109,7 @@ w_local_h = afficher_blocs_score(obtenir_meteo(lat_l, lon_l), f"🌤️ Scores d
 
 st.divider()
 
-# --- 4. ANALYSE GPX ---
+# --- 4. ZONE PARCOURS ---
 lat_p, lon_p, w_p_h = None, None, None
 if f_gpx:
     gpx_parsed = gpxpy.parse(f_gpx.getvalue())
@@ -100,31 +124,24 @@ if f_gpx:
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
         st_folium(m, width=1100, height=400, key=f"map_{v_p}")
 
-# --- 5. ANALYSE DE DONNÉES & ENREGISTREMENT ---
+# --- 5. ZONE ENREGISTREMENT & ANALYSE CSV ---
 if membre_on and u and p:
     st.divider()
     st.header("📝 Enregistrer une activité")
-    
     t1, t2 = st.tabs(["Saisie Manuelle", "Analyse de fichier (CSV)"])
-    
-    # Initialisation des valeurs par défaut
     val_watts, val_hr = 200, 140
 
     with t2:
-        f_csv = st.file_uploader("Importer vos données (Power, Cardio...)", type=['csv'])
+        f_csv = st.file_uploader("Importer vos données (.csv)", type=['csv'])
         if f_csv:
             try:
                 data_df = pd.read_csv(f_csv)
-                # On cherche les colonnes contenant "watt", "power", "heart" ou "hr"
-                col_w = [c for c in data_df.columns if 'watt' in c.lower() or 'power' in c.lower()]
-                col_h = [c for c in data_df.columns if 'heart' in c.lower() or 'hr' in c.lower()]
-                
+                col_w = [c for c in data_df.columns if any(x in c.lower() for x in ['watt', 'power'])]
+                col_h = [c for c in data_df.columns if any(x in c.lower() for x in ['heart', 'hr', 'puls'])]
                 if col_w: val_watts = int(data_df[col_w[0]].mean())
                 if col_h: val_hr = int(data_df[col_h[0]].mean())
-                
-                st.success(f"✅ Analyse terminée : Moyenne {val_watts}W et {val_hr} BPM détectés.")
-            except:
-                st.error("Impossible de lire le format du CSV. Vérifiez les colonnes.")
+                st.success(f"✅ Données détectées : {val_watts}W | {val_hr} BPM")
+            except: st.error("Erreur de lecture du fichier.")
 
     with t1:
         c1, c2, c3 = st.columns(3)
@@ -132,23 +149,19 @@ if membre_on and u and p:
         hr_in = c2.number_input("Cardio Moyen", min_value=0, value=val_hr)
         h_idx = c3.selectbox("Heure de la sortie", [10, 13, 16, 19])
         
-        if st.button("💾 Sauvegarder dans mon historique"):
+        if st.button("💾 Sauvegarder dans l'historique"):
             try:
                 u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
                 target_w = w_p_h if w_p_h else w_local_h
-                
                 new_entry = {
-                    'user': u_id,
-                    'temp': target_w['temperature_2m'][h_idx],
+                    'user': u_id, 'temp': target_w['temperature_2m'][h_idx],
                     'wind': target_w['windspeed_10m'][h_idx],
                     'hum': target_w.get('relative_humidity_2m', [50]*24)[h_idx],
-                    'watts': w_in,
-                    'cardio': hr_in,
-                    'date': datetime.now().strftime("%Y-%m-%d")
+                    'watts': w_in, 'cardio': hr_in, 'date': datetime.now().strftime("%Y-%m-%d")
                 }
                 conn.update(worksheet="Performances", data=pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True))
-                st.success("Activité enregistrée avec succès !")
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+                st.success("Activité enregistrée !")
+                st.rerun()
+            except Exception as e: st.error(f"Erreur : {e}")
