@@ -8,6 +8,7 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 import hashlib
+import time
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", layout="wide", page_icon="🚴")
@@ -20,8 +21,17 @@ def obtenir_meteo(lat, lon):
         return r.json() if r.status_code == 200 else None
     except: return None
 
+def geocoder_robuste(query, reverse=False):
+    """Tentative de géocodage avec relance en cas d'échec"""
+    for _ in range(2): # 2 tentatives
+        try:
+            g = geocoder.osm(query, method='reverse' if reverse else 'geocode')
+            if g and g.ok: return g
+        except: pass
+        time.sleep(1) # Petit délai entre les essais
+    return None
+
 def afficher_blocs_score(data_meteo, titre_section):
-    """Fonction réutilisable pour afficher les 4 blocs de score colorés"""
     if data_meteo and 'hourly' in data_meteo:
         st.subheader(titre_section)
         cols = st.columns(4)
@@ -30,7 +40,6 @@ def afficher_blocs_score(data_meteo, titre_section):
             v = data_meteo['hourly']['windspeed_10m'][h]
             p = data_meteo['hourly']['precipitation_probability'][h]
             
-            # Calcul du score de confort
             malus = ((12 - t) * 5 if t < 12 else 0) + v + (p / 2)
             score = int(max(0, min(100, 100 - malus)))
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
@@ -58,10 +67,12 @@ membre_on = st.sidebar.checkbox("Accès Membre")
 
 # --- 3. ZONE HAUTE : SCORES VILLE ---
 st.title(f"🚴 Coach IA : {ville_choisie}")
-g_local = geocoder.osm(ville_choisie)
-lat_l, lon_l = (g_local.lat, g_local.lng) if (g_local and g_local.ok) else (47.06, -0.88)
+g_local = geocoder_robuste(ville_choisie)
 
-if not (g_local and g_local.ok):
+if g_local:
+    lat_l, lon_l = g_local.lat, g_local.lng
+else:
+    lat_l, lon_l = 47.06, -0.88 # Cholet
     st.sidebar.warning("⚠️ Géoloc locale indisponible (Mode secours)")
 
 w_local = obtenir_meteo(lat_l, lon_l)
@@ -76,18 +87,13 @@ if f_gpx:
     
     if pts:
         lat_s, lon_s = pts[0][0], pts[0][1]
-        
-        # Identification de la ville du parcours
-        g_s = geocoder.osm([lat_s, lon_s], method='reverse')
-        ville_gpx = g_s.city or g_s.town or g_s.village or "Soullans"
+        g_s = geocoder_robuste([lat_s, lon_s], reverse=True)
+        ville_gpx = g_s.city or g_s.town or g_s.village or "Soullans" if g_s else "Soullans"
         
         st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
-        
-        # Affichage des scores spécifiques au parcours
         w_gpx = obtenir_meteo(lat_s, lon_s)
         afficher_blocs_score(w_gpx, f"📊 Scores de confort sur le parcours ({ville_gpx})")
         
-        # Carte Folium
         st.write("")
         m = folium.Map(location=[lat_s, lon_s], zoom_start=12)
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
