@@ -10,10 +10,15 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor
 import hashlib
 
-# --- 1. CONFIGURATION ---
+# --- 1. BOUTON DE SECOURS (A UTILISER SI CA BLOQUE) ---
+if st.sidebar.button("♻️ RÉINITIALISER TOUT"):
+    for key in st.session_state.keys():
+        del st.session_state[key]
+    st.rerun()
+
+# --- 2. CONFIGURATION & ETAT ---
 st.set_page_config(page_title="Coach IA Cyclisme", layout="wide", page_icon="🚴")
 
-# Initialisation robuste
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
 if 'coords' not in st.session_state:
@@ -21,15 +26,7 @@ if 'coords' not in st.session_state:
 if 'pts_gpx' not in st.session_state:
     st.session_state.pts_gpx = None
 
-# Fonction de mise à jour manuelle
-def update_city():
-    nouvelle_saisie = st.session_state.city_input_widget
-    g = geocoder.osm(nouvelle_saisie)
-    if g and g.ok:
-        st.session_state.coords = (g.lat, g.lng)
-        st.session_state.nom_ville = nouvelle_saisie
-
-# --- 2. LOGIQUE GPX ---
+# --- 3. LOGIQUE GPX ---
 st.sidebar.header("🌍 Configuration")
 f_gpx = st.sidebar.file_uploader("📂 Importer GPX", type=['gpx'])
 
@@ -47,15 +44,16 @@ if f_gpx is not None:
     except Exception as e:
         st.sidebar.error(f"Erreur GPX : {e}")
 
-# CHAMP VILLE (Utilise on_change pour être certain que Streamlit valide la saisie)
-st.sidebar.text_input(
-    "📍 Ville active", 
-    value=st.session_state.nom_ville, 
-    key="city_input_widget",
-    on_change=update_city
-)
+# SAISIE MANUELLE (Sans widget de session pour éviter le blocage)
+ville_saisie = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
+if ville_saisie != st.session_state.nom_ville:
+    g = geocoder.osm(ville_saisie)
+    if g and g.ok:
+        st.session_state.coords = (g.lat, g.lng)
+        st.session_state.nom_ville = ville_saisie
+        st.rerun()
 
-# --- 3. RÉCUPÉRATION MÉTÉO ---
+# --- 4. RÉCUPÉRATION MÉTÉO ---
 def obtenir_meteo(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
     try:
@@ -65,13 +63,13 @@ def obtenir_meteo(lat, lon):
 
 weather = obtenir_meteo(st.session_state.coords[0], st.session_state.coords[1])
 
-# --- 4. RÉGLAGES ---
+# --- 5. RÉGLAGES ---
 st.sidebar.divider()
 sf = st.sidebar.slider("🌡️ Sensibilité Froid", 0, 10, 5)
 sv = st.sidebar.slider("💨 Sensibilité Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
-# --- 5. AFFICHAGE PRINCIPAL ---
+# --- 6. AFFICHAGE PRINCIPAL ---
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
 if weather and 'hourly' in weather:
@@ -80,42 +78,43 @@ if weather and 'hourly' in weather:
     heures = [10, 13, 16, 19]
     for i, h in enumerate(heures):
         temp, vent, pluie = weather['hourly']['temperature_2m'][h], weather['hourly']['windspeed_10m'][h], weather['hourly']['precipitation_probability'][h]
+        # Algorithme original
         score = int(max(0, min(100, 100 - ((12-temp)*sf if temp<12 else 0) - (vent*(sv/5)) - (pluie*(sp/5)))))
         couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
         with cols[i]:
             st.markdown(f"""
             <div style="text-align: center; border: 1px solid #ddd; padding: 20px; border-radius: 15px; background-color: #fcfcfc;">
-                <h3 style="margin:0; color: #555;">{h}h00</h3>
-                <h1 style="color:{couleur}; margin:15px 0; font-size: 2.5em;">{score}/100</h1>
-                <p style="margin:5px 0;">🌡️ <b>{temp}°C</b></p>
-                <p style="margin:0; color: #666; font-size: 0.8em;">💨 {vent} km/h | 🌧️ {pluie}%</p>
+                <h3 style="margin:0;">{h}h00</h3>
+                <h1 style="color:{couleur}; font-size: 2.5em;">{score}/100</h1>
+                <p>🌡️ <b>{temp}°C</b> | 💨 {vent} km/h</p>
             </div>
             """, unsafe_allow_html=True)
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE & CRÉATION ---
+# --- 7. ESPACE MEMBRE & BOUTON COMPTE ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
     
-    if u and p:
-        u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
-        
-        # BOUTON CRÉER COMPTE
-        if st.sidebar.button("➕ Créer ce compte"):
+    # LE BOUTON + (Positionné pour être inamovible)
+    if st.sidebar.button("➕ Créer ce compte"):
+        if u and p:
             try:
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-                if u_id not in df['user'].astype(str).values:
-                    new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
-                    conn.update(worksheet="Performances", data=pd.concat([df, new_user], ignore_index=True))
-                    st.sidebar.success("Compte créé !")
-                else:
-                    st.sidebar.warning("Existe déjà.")
-            except: st.sidebar.error("Erreur GSheets.")
+                u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+                new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
+                conn.update(worksheet="Performances", data=pd.concat([df, new_user], ignore_index=True))
+                st.sidebar.success("Compte créé !")
+            except Exception as e:
+                st.sidebar.error("Erreur GSheets")
+        else:
+            st.sidebar.warning("Remplissez Pseudo/Pass")
 
-        # IA
+    # Connexion IA
+    if u and p:
+        u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
             df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
@@ -125,12 +124,13 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
                 if len(user_data) >= 3:
                     model = RandomForestRegressor(n_estimators=100).fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
                     pred = model.predict([[weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]]])[0]
-                    st.metric("🎯 Puissance estimée", f"{int(pred)} Watts")
+                    st.metric("🎯 Puissance estimée", f"{int(pred)} W")
         except: pass
 
-# --- 7. CARTE ---
+# --- 8. CARTE ---
 if st.session_state.pts_gpx:
     st.subheader("🗺️ Tracé du parcours")
     m = folium.Map(location=st.session_state.coords, zoom_start=12)
     folium.PolyLine(st.session_state.pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1200, height=500, key="map_final")
+    
