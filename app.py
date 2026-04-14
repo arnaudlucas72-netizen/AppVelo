@@ -10,149 +10,119 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor
 import hashlib
 
-# --- 1. CONFIGURATION & INITIALISATION ---
-st.set_page_config(page_title="Coach IA Cyclisme", page_icon="🚴", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Coach IA Cyclisme", layout="wide")
 
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
 
-# --- 2. GESTION DU GPX (PRIORITÉ ABSOLUE) ---
-st.sidebar.header("🌍 Configuration Parcours")
-f_gpx = st.sidebar.file_uploader("📂 Importer un fichier GPX", type=['gpx'], key="main_uploader")
+# --- 2. LOGIQUE GPX ---
+st.sidebar.header("🌍 Configuration")
+f_gpx = st.sidebar.file_uploader("📂 Importer GPX", type=['gpx'])
 
 pts_gpx = None
-if f_gpx is not None:
+if f_gpx:
     try:
-        # Lecture complète du fichier
         gpx_parsed = gpxpy.parse(f_gpx.getvalue())
         pts_gpx = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
-        
         if pts_gpx:
-            # Détection de la ville par coordonnées
             g_inv = geocoder.osm([pts_gpx[0][0], pts_gpx[0][1]], method='reverse')
             ville_detectee = g_inv.city if g_inv.city else g_inv.town
-            
-            # Mise à jour de la session si changement
             if ville_detectee and ville_detectee != st.session_state.nom_ville:
                 st.session_state.nom_ville = ville_detectee
                 st.rerun()
-    except Exception as e:
-        st.sidebar.error("Erreur de lecture GPX")
+    except: pass
 
-# Champ de saisie manuel (synchronisé)
-ville_input = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
-if ville_input != st.session_state.nom_ville:
-    st.session_state.nom_ville = ville_input
-    st.rerun()
+st.sidebar.text_input("📍 Ville", value=st.session_state.nom_ville, key="city_input")
 
-# --- 3. RÉCUPÉRATION MÉTÉO (FONCTION CACHÉE) ---
-@st.cache_data(ttl=3600)
-def fetch_weather_and_coords(ville):
+# --- 3. RÉCUPÉRATION MÉTÉO (SANS CACHE POUR TESTER) ---
+def obtenir_meteo_directe(ville):
     g = geocoder.osm(ville)
-    if not g or not g.ok: 
-        g = geocoder.osm("Cholet")
+    if not g or not g.ok: g = geocoder.osm("Cholet")
     url = f"https://api.open-meteo.com/v1/forecast?latitude={g.lat}&longitude={g.lng}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
-    return (g.lat, g.lng), requests.get(url).json()
+    r = requests.get(url)
+    return r.json() if r.status_code == 200 else None
 
-coords, weather = fetch_weather_and_coords(st.session_state.nom_ville)
+weather = obtenir_meteo_directe(st.session_state.nom_ville)
 
-# --- 4. BARRE LATÉRALE : ACCÈS ET RÉGLAGES ---
+# --- 4. RÉGLAGES SENSIBILITÉ ---
 st.sidebar.divider()
-st.sidebar.header("🔐 Espace Membre")
+sf = st.sidebar.slider("🌡️ Sensibilité Froid", 0, 10, 5)
+sv = st.sidebar.slider("💨 Sensibilité Vent", 0, 10, 5)
+sp = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
-if not st.session_state.logged_in:
-    u = st.sidebar.text_input("Pseudo")
-    p = st.sidebar.text_input("Mot de passe", type="password")
-    if st.sidebar.button("Connexion"):
-        try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df_auth = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-            u_key = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
-            if u_key in df_auth['user'].astype(str).values:
-                st.session_state.logged_in = True
-                st.session_state.user_id = u_key
-                st.session_state.display_name = u
-                st.rerun()
-        except: st.sidebar.error("Lien Google Sheets indisponible")
-else:
-    st.sidebar.success(f"Connecté : {st.session_state.display_name}")
-    if st.sidebar.button("Déconnexion"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-st.sidebar.divider()
-st.sidebar.header("⚙️ Sensibilité")
-sf = st.sidebar.slider("🌡️ Froid", 0, 10, 5)
-sv = st.sidebar.slider("💨 Vent", 0, 10, 5)
-sp = st.sidebar.slider("🌧️ Pluie", 0, 10, 7)
-
-# --- 5. AFFICHAGE PRINCIPAL ---
+# --- 5. AFFICHAGE DES SCORES (STRUCTURE SIMPLIFIÉE) ---
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
-# Section Météo
 if weather and 'hourly' in weather:
-    st.header(f"🌤️ Prévisions détaillées à {st.session_state.nom_ville}")
-    cols = st.columns(4)
-    for i, h in enumerate([10, 13, 16, 19]):
-        t = weather['hourly']['temperature_2m'][h]
-        v = weather['hourly']['windspeed_10m'][h]
-        p = weather['hourly']['precipitation_probability'][h]
-        # Calcul du score de confort
-        score = max(0, min(100, int(100 - (12-t if t<12 else 0)*sf/5 - v*0.8*sv/5 - p*1.2*sp/5)))
+    st.subheader(f"🌤️ Prévisions et Scores à {st.session_state.nom_ville}")
+    
+    # On crée les colonnes
+    c1, c2, c3, c4 = st.columns(4)
+    heures = [10, 13, 16, 19]
+    cols = [c1, c2, c3, c4]
+    
+    for i, h in enumerate(heures):
+        temp = weather['hourly']['temperature_2m'][h]
+        vent = weather['hourly']['windspeed_10m'][h]
+        pluie = weather['hourly']['precipitation_probability'][h]
+        
+        # Calcul du score (0-100)
+        # Malus froid : si < 12°C
+        malus_froid = (12 - temp) * sf if temp < 12 else 0
+        # Malus vent : 1km/h = 1 point * coef
+        malus_vent = vent * (sv / 5)
+        # Malus pluie : % de probabilité
+        malus_pluie = pluie * (sp / 5)
+        
+        score = int(max(0, min(100, 100 - malus_froid - malus_vent - malus_pluie)))
+        
+        # Affichage dans la colonne
+        couleur = "green" if score > 75 else "orange" if score > 45 else "red"
         with cols[i]:
-            color = "green" if score > 75 else "orange" if score > 45 else "red"
-            st.markdown(f"**{h}h00**\n<h2 style='color:{color};'>{score}/100</h2>", unsafe_allow_html=True)
-            st.caption(f"🌡️ {t}°C | 💨 {v}km/h | 💧 {p}%")
+            st.markdown(f"""
+            <div style="text-align: center; border: 1px solid #ddd; padding: 10px; border-radius: 10px;">
+                <h3 style="margin:0;">{h}h00</h3>
+                <h1 style="color:{couleur}; margin:10px 0;">{score}/100</h1>
+                <p style="margin:0;">🌡️ <b>{temp}°C</b></p>
+                <p style="margin:0;">💨 {vent} km/h</p>
+                <p style="margin:0;">🌧️ {pluie}%</p>
+            </div>
+            """, unsafe_allow_html=True)
+else:
+    st.error("Impossible de charger les données météo. Vérifiez votre connexion ou le nom de la ville.")
 
 st.divider()
 
-# Section IA & Performance
-if st.session_state.logged_in:
-    st.header(f"🤖 Analyse Performance : {st.session_state.display_name}")
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-        df_u = df_all[df_all['user'].astype(str) == st.session_state.user_id]
-        
-        if len(df_u) >= 3:
-            # Entraînement express du modèle
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
-            model.fit(df_u[['temp', 'wind', 'hum']], df_u['watts'])
+# --- 6. SECTION IA (GSheets) ---
+if st.sidebar.checkbox("🔓 Activer Espace Membre"):
+    u = st.sidebar.text_input("Pseudo")
+    p = st.sidebar.text_input("Pass", type="password")
+    if u and p:
+        try:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            df = conn.read(worksheet="Performances", ttl=0)
+            u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+            user_data = df[df['user'].astype(str) == u_id]
             
-            # Prédiction pour 13h
-            t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
-            pred = model.predict([[t13, v13, h13]])[0]
-            st.success(f"🎯 Puissance estimée pour ta sortie à 13h : **{int(pred)} Watts**")
-        else:
-            st.info(f"Encore {3 - len(df_u)} sortie(s) à enregistrer pour activer l'IA.")
+            if not user_data.empty:
+                st.success(f"Connecté : {u}")
+                if len(user_data) >= 3:
+                    model = RandomForestRegressor(n_estimators=100).fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
+                    t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
+                    pred = model.predict([[t13, v13, h13]])[0]
+                    st.metric("🎯 Estimation Puissance (13h)", f"{int(pred)} Watts")
+                else:
+                    st.info("Données insuffisantes pour l'IA (min. 3 sorties).")
+            else:
+                st.warning("Utilisateur inconnu dans la base GSheets.")
+        except Exception as e:
+            st.error(f"Erreur GSheets : {e}")
 
-        with st.expander("📤 Importer une nouvelle performance (CSV)"):
-            f_csv = st.file_uploader("Fichier CSV de puissance", type=['csv'])
-            if f_csv and st.button("Valider l'enregistrement"):
-                df_new = pd.read_csv(f_csv)
-                df_new.columns = [c.lower().strip() for c in df_new.columns]
-                w_moy = df_new[df_new['watts']>0]['watts'].mean()
-                
-                new_row = pd.DataFrame([{
-                    'user': st.session_state.user_id,
-                    'temp': weather['hourly']['temperature_2m'][12],
-                    'wind': weather['hourly']['windspeed_10m'][12],
-                    'hum': weather['hourly']['relative_humidity_2m'][12],
-                    'watts': w_moy,
-                    'date': datetime.now().strftime("%Y-%m-%d")
-                }])
-                conn.update(worksheet="Performances", data=pd.concat([df_all, new_row], ignore_index=True))
-                st.rerun()
-    except:
-        st.warning("IA en attente de données...")
-else:
-    st.info("👋 Connectez-vous dans la barre latérale pour accéder à l'analyse de puissance IA.")
-
-# Section Carte
+# --- 7. CARTE ---
 if pts_gpx:
-    st.header(f"🗺️ Parcours détecté : {st.session_state.nom_ville}")
+    st.subheader("🗺️ Parcours")
     m = folium.Map(location=pts_gpx[0], zoom_start=12)
     folium.PolyLine(pts_gpx, color="blue", weight=4).add_to(m)
-    st_folium(m, width=1000, height=450, key="map_final")
+    st_folium(m, width=1000, height=400)
+    
