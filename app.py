@@ -33,7 +33,7 @@ st.sidebar.divider()
 st.sidebar.header("🔓 3. Espace Membre")
 membre_on = st.sidebar.checkbox("Accès Membre", key="member_toggle")
 
-# --- 3. ZONE HAUTE : SCORES RÉTABLIS ---
+# --- 3. ZONE HAUTE : SCORES (VERSION INCASSABLE) ---
 st.title(f"🚴 Coach IA : {ville_choisie}")
 g_local = geocoder.osm(ville_choisie)
 
@@ -42,26 +42,36 @@ if g_local and g_local.ok:
     if w_local and 'hourly' in w_local:
         st.subheader(f"🌤️ Scores de confort à {ville_choisie}")
         cols = st.columns(4)
-        heures = [10, 13, 16, 19]
-        for i, h in enumerate(heures):
-            t = w_local['hourly']['temperature_2m'][h]
-            v = w_local['hourly']['windspeed_10m'][h]
-            p = w_local['hourly']['precipitation_probability'][h]
+        heures_indices = [10, 13, 16, 19] # Indices pour l'API
+        
+        for i, h in enumerate(heures_indices):
+            # Extraction sécurisée des données
+            temp = w_local['hourly']['temperature_2m'][h]
+            vent = w_local['hourly']['windspeed_10m'][h]
+            pluie = w_local['hourly']['precipitation_probability'][h]
             
-            # Algorithme de score original
-            malus = ((12 - t) * 5 if t < 12 else 0) + v + (p / 5)
-            score = int(max(0, min(100, 100 - malus)))
+            # Calcul du score simplifié pour éviter toute erreur de type
+            score = 100
+            if temp < 12: score -= (12 - temp) * 5
+            score -= vent
+            score -= (pluie / 2)
+            score = int(max(0, min(100, score)))
+            
+            # Choix de la couleur
             couleur = "#28a745" if score > 75 else "#fd7e14" if score > 45 else "#dc3545"
             
             with cols[i]:
+                # Affichage HTML
                 st.markdown(f"""
-                <div style="text-align: center; border: 1px solid #ddd; padding: 20px; border-radius: 15px; background-color: #fcfcfc;">
+                <div style="text-align: center; border: 1px solid #ddd; padding: 20px; border-radius: 15px; background-color: #fcfcfc; min-height: 150px;">
                     <h3 style="margin:0; color: #555;">{h}h00</h3>
-                    <h1 style="color:{couleur}; margin:15px 0; font-size: 2.5em;">{score}/100</h1>
-                    <p style="margin:5px 0;">🌡️ <b>{t}°C</b></p>
-                    <p style="margin:0; color: #666; font-size: 0.8em;">💨 {v} km/h | 🌧️ {p}%</p>
+                    <h1 style="color:{couleur}; margin:10px 0; font-size: 2.5em;">{score}/100</h1>
+                    <p style="margin:0; font-weight: bold;">{temp}°C</p>
+                    <p style="margin:0; color: #666; font-size: 0.8em;">💨 {vent} km/h | 🌧️ {pluie}%</p>
                 </div>
                 """, unsafe_allow_html=True)
+    else:
+        st.error("Impossible de récupérer la météo locale. Vérifie ta connexion.")
 
 st.divider()
 
@@ -73,14 +83,12 @@ if f_gpx:
     if pts:
         lat_s, lon_s = pts[0][0], pts[0][1]
         g_s = geocoder.osm([lat_s, lon_s], method='reverse')
-        ville_gpx = "Soullans" 
-        if g_s and g_s.ok:
-            ville_gpx = g_s.city or g_s.town or "Soullans"
+        ville_gpx = g_s.city or g_s.town or "Soullans" 
         
         st.header(f"🗺️ Analyse du Parcours : {ville_gpx}")
         
         w_gpx = obtenir_meteo(lat_s, lon_s)
-        if w_gpx and 'hourly' in w_gpx:
+        if w_gpx:
             st.info(f"📊 Météo au départ de **{ville_gpx}**")
             m_cols = st.columns(4)
             for i, h in enumerate([10, 13, 16, 19]):
@@ -90,24 +98,24 @@ if f_gpx:
         folium.PolyLine(pts, color="blue", weight=4).add_to(m)
         st_folium(m, width=1100, height=400, key=f"map_v_{ville_gpx}")
 
-# --- 5. ESPACE MEMBRE & BOUTON FIXÉ ---
+# --- 5. ESPACE MEMBRE & BOUTON ---
 if membre_on:
-    # Bouton placé AVANT les inputs pour qu'il soit inamovible
-    if st.sidebar.button("➕ Créer ce compte", key="btn_permanent"):
-        st.sidebar.info("Saisissez Pseudo/Pass ci-dessous puis re-cliquez.")
-
-    u = st.sidebar.text_input("Pseudo", key="input_u")
-    p = st.sidebar.text_input("Pass", type="password", key="input_p")
-    
-    if u and p:
-        u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
-        try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
-            if u_id not in df['user'].astype(str).values:
-                # Création automatique si on clique sur le bouton du haut
+    # Bouton de création
+    if st.sidebar.button("➕ Créer ce compte", key="btn_create_final"):
+        u = st.session_state.get('input_u', '')
+        p = st.session_state.get('input_p', '')
+        if u and p:
+            try:
+                u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
                 new_user = pd.DataFrame([{'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 'date': datetime.now().strftime("%Y-%m-%d")}])
                 conn.update(worksheet="Performances", data=pd.concat([df, new_user], ignore_index=True))
                 st.sidebar.success("Compte créé !")
-        except: pass
-            
+            except: st.sidebar.error("Erreur GSheets")
+        else:
+            st.sidebar.warning("Pseudo/Pass requis")
+
+    st.sidebar.text_input("Pseudo", key="input_u")
+    st.sidebar.text_input("Pass", type="password", key="input_p")
+    
