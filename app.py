@@ -108,7 +108,7 @@ if weather and 'hourly' in weather:
 
 st.divider()
 
-# --- 6. ESPACE MEMBRE & IA (AVEC CRÉATION DE COMPTE) ---
+# --- 6. ESPACE MEMBRE & IA (BOUTON TOUJOURS PRÉSENT) ---
 if st.sidebar.checkbox("🔓 Accès Membre"):
     u = st.sidebar.text_input("Pseudo")
     p = st.sidebar.text_input("Pass", type="password")
@@ -119,34 +119,37 @@ if st.sidebar.checkbox("🔓 Accès Membre"):
             df = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
             u_id = f"{u}_{hashlib.sha256(str.encode(p)).hexdigest()}"
             
+            # 1. Bouton Créer un compte (Toujours là si Pseudo/Pass remplis)
+            if st.sidebar.button("➕ Créer ce compte"):
+                if u_id in df['user'].astype(str).values:
+                    st.sidebar.error("Ce compte existe déjà.")
+                else:
+                    new_user = pd.DataFrame([{
+                        'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
+                        'date': datetime.now().strftime("%Y-%m-%d")
+                    }])
+                    updated_df = pd.concat([df, new_user], ignore_index=True)
+                    conn.update(worksheet="Performances", data=updated_df)
+                    st.sidebar.success("Compte créé !")
+                    st.rerun()
+
+            # 2. Logique de connexion et IA
             user_data = df[df['user'].astype(str) == u_id]
-            
             if not user_data.empty:
-                st.sidebar.success(f"Cycliste reconnu : {u}")
+                st.sidebar.success(f"Connecté : {u}")
                 if len(user_data) >= 3:
-                    st.subheader(f"🤖 Analyse IA pour {u}")
                     model = RandomForestRegressor(n_estimators=100, random_state=42)
                     model.fit(user_data[['temp', 'wind', 'hum']], user_data['watts'])
                     t13, v13, h13 = weather['hourly']['temperature_2m'][13], weather['hourly']['windspeed_10m'][13], weather['hourly']['relative_humidity_2m'][13]
                     pred = model.predict([[t13, v13, h13]])[0]
                     st.metric("🎯 Puissance estimée (13h)", f"{int(pred)} Watts")
                 else:
-                    st.info(f"Besoin de 3 sorties pour l'IA (Actuel : {len(user_data)})")
+                    st.info(f"Besoin de 3 sorties pour l'IA.")
             else:
-                # Bloc Ajouté : Création de compte
-                st.sidebar.warning("Utilisateur inconnu")
-                if st.sidebar.button("➕ Créer ce compte"):
-                    new_row = pd.DataFrame([{
-                        'user': u_id, 'temp': 20, 'wind': 10, 'hum': 50, 'watts': 0, 
-                        'date': datetime.now().strftime("%Y-%m-%d")
-                    }])
-                    updated_df = pd.concat([df, new_row], ignore_index=True)
-                    conn.update(worksheet="Performances", data=updated_df)
-                    st.sidebar.success("Compte créé ! Re-connectez-vous.")
-                    st.rerun()
+                st.sidebar.warning("Utilisateur inconnu (Cliquez sur + pour créer)")
 
         except Exception as e:
-            st.sidebar.error(f"Erreur de connexion aux données : {e}")
+            st.sidebar.error(f"Erreur GSheets : {e}")
 
 # --- 7. CARTE ---
 if st.session_state.pts_gpx:
