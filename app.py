@@ -16,8 +16,8 @@ st.set_page_config(page_title="Coach IA Cyclisme", page_icon="🚴", layout="wid
 # 1. INITIALISATION DES VARIABLES
 if 'nom_ville' not in st.session_state:
     st.session_state.nom_ville = "Cholet"
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+if 'version_ville' not in st.session_state:
+    st.session_state.version_ville = 0 # Pour forcer le rafraîchissement du widget
 
 # Connexion Google Sheets
 try:
@@ -42,8 +42,7 @@ st.sidebar.header("🔐 Accès Membre")
 input_pseudo = st.sidebar.text_input("Pseudo").strip()
 input_password = st.sidebar.text_input("Mot de passe", type="password").strip()
 
-col_auth1, col_auth2 = st.sidebar.columns(2)
-if col_auth1.button("Connexion"):
+if st.sidebar.button("Connexion"):
     if input_pseudo and input_password:
         df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
         user_key = f"{input_pseudo}_{hacher_password(input_password)}"
@@ -52,53 +51,45 @@ if col_auth1.button("Connexion"):
             st.session_state.user_id = user_key
             st.session_state.display_name = input_pseudo
             st.rerun()
-        else:
-            st.sidebar.error("Erreur d'identifiants.")
-
-if st.session_state.logged_in and st.sidebar.button("Déconnexion"):
-    st.session_state.logged_in = False
-    st.rerun()
 
 st.sidebar.divider()
 
-# --- LOGIQUE DE LOCALISATION (LA SOLUTION AU PROBLÈME) ---
+# --- LOGIQUE GPX : DÉTECTION PRIORITAIRE ---
 st.sidebar.header("🌍 Localisation & GPX")
+f_gpx = st.sidebar.file_uploader("📂 Charger un GPX", type=['gpx'])
 
-# On définit d'abord le File Uploader
-f_gpx = st.sidebar.file_uploader("📂 Charger un GPX (Auto-détection)", type=['gpx'])
-
+pts_gpx = None
 if f_gpx:
     gpx = gpxpy.parse(f_gpx)
     pts_gpx = [[p.latitude, p.longitude] for t in gpx.tracks for s in t.segments for p in s.points]
     if pts_gpx:
         try:
-            # On cherche la ville du point de départ du GPX (Soullans pour ton fichier)
+            # On détecte la ville du GPX (Soullans pour ton fichier)
             g_inv = geocoder.osm([pts_gpx[0][0], pts_gpx[0][1]], method='reverse')
             if g_inv and g_inv.city:
-                # SI LA VILLE GPX EST DIFFÉRENTE, ON ÉCRASE TOUT ET ON RERUN
-                if st.session_state.nom_ville != g_inv.city:
+                if g_inv.city != st.session_state.nom_ville:
                     st.session_state.nom_ville = g_inv.city
-                    st.rerun() 
+                    st.session_state.version_ville += 1 # On change la clé pour forcer le widget
+                    st.rerun()
         except:
             pass
-else:
-    pts_gpx = None
 
-# Widget de texte : il affiche toujours ce qui est dans st.session_state.nom_ville
-# Si on change de ville via le GPX + rerun, ce widget affichera la nouvelle ville
-ville_choisie = st.sidebar.text_input("📍 Ville", value=st.session_state.nom_ville)
+# Widget Ville avec une CLÉ DYNAMIQUE (force la mise à jour)
+ville_choisie = st.sidebar.text_input(
+    "📍 Ville actuelle", 
+    value=st.session_state.nom_ville, 
+    key=f"ville_widget_{st.session_state.version_ville}"
+)
 
-# Si l'utilisateur change manuellement le nom dans le champ texte
 if ville_choisie != st.session_state.nom_ville:
     st.session_state.nom_ville = ville_choisie
-    st.rerun()
+    # On ne fait pas de rerun ici pour éviter les boucles infinies de saisie
 
 sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
 sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
 
 # --- RÉCUPÉRATION MÉTEO ---
-# On utilise la variable "st.session_state.nom_ville" qui a été mise à jour par le GPX
 lat, lon, _ = obtenir_coords(st.session_state.nom_ville)
 api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
 data_m = requests.get(api_url).json()
@@ -106,72 +97,52 @@ data_m = requests.get(api_url).json()
 # --- PAGE PRINCIPALE ---
 st.title(f"🚴 Coach IA & Météo : {st.session_state.nom_ville}")
 
-# 1. Prévisions Météo
-st.header(f"🌤️ Prévisions pour {st.session_state.nom_ville}")
+# 1. Météo
+st.header(f"🌤️ Prévisions")
 if 'hourly' in data_m:
     m_cols = st.columns(4)
     for i, h in enumerate([10, 13, 16, 19]):
-        t = data_m['hourly']['temperature_2m'][h]
-        v = data_m['hourly']['windspeed_10m'][h]
-        p = data_m['hourly']['precipitation_probability'][h]
-        
-        score = 100
-        if t < 12: score -= (12 * sf / 5)
-        score -= (v * 0.8 * sv / 5)
-        score -= (p * 1.2 * sp / 5)
-        score = max(0, min(100, int(score)))
-        
+        t, v, p = data_m['hourly']['temperature_2m'][h], data_m['hourly']['windspeed_10m'][h], data_m['hourly']['precipitation_probability'][h]
+        score = max(0, min(100, int(100 - (12-t if t<12 else 0)*sf/5 - v*0.8*sv/5 - p*1.2*sp/5)))
         with m_cols[i]:
             color = "green" if score > 75 else "orange" if score > 45 else "red"
-            st.markdown(f"**{h}h00**")
-            st.markdown(f"<h2 style='color:{color};'>{score}/100</h2>", unsafe_allow_html=True)
+            st.markdown(f"**{h}h00**\n<h2 style='color:{color};'>{score}/100</h2>", unsafe_allow_html=True)
             st.caption(f"{t}°C | {v}km/h")
 
 st.divider()
 
-# 2. IA & Performances (Si connecté)
-if st.session_state.logged_in:
+# 2. IA (Si connecté)
+if st.session_state.get('logged_in'):
     st.header(f"🤖 Analyse de {st.session_state.display_name}")
     df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
     df_user = df_all[(df_all['user'].astype(str).str.strip() == st.session_state.user_id) & (df_all['date'] != 'INIT')]
     
-    nb_sorties = len(df_user)
-    if nb_sorties >= 3:
+    if len(df_user) >= 3:
         model = RandomForestRegressor(n_estimators=100, random_state=42)
         model.fit(df_user[['temp', 'wind', 'hum']], df_user['watts'])
         t13, v13, h13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
         pred = model.predict([[t13, v13, h13]])[0]
         st.success(f"🎯 Estimation puissance à 13h : **{int(pred)} Watts**")
     else:
-        st.info(f"Ajoute encore {3-nb_sorties} sorties CSV pour activer l'IA.")
+        st.info("Besoin de 3 sorties pour l'IA.")
 
-    with st.expander("📥 Enregistrer une sortie CSV"):
-        f_csv = st.file_uploader("Fichier CSV", type=['csv'], key="csv_upload")
+    with st.expander("📥 Ajouter CSV"):
+        f_csv = st.file_uploader("Fichier CSV", type=['csv'], key="csv")
         if f_csv and st.button("Sauvegarder"):
             df_new = pd.read_csv(f_csv)
             df_new.columns = [c.lower().strip() for c in df_new.columns]
             w_moy = df_new[df_new['watts']>0]['watts'].mean()
-            nouvelle_ligne = pd.DataFrame([{
-                'user': st.session_state.user_id,
-                'temp': data_m['hourly']['temperature_2m'][12],
-                'wind': data_m['hourly']['windspeed_10m'][12],
-                'hum': data_m['hourly']['relative_humidity_2m'][12],
-                'watts': w_moy,
-                'date': datetime.now().strftime("%Y-%m-%d")
-            }])
-            df_final = pd.concat([df_all, nouvelle_ligne], ignore_index=True)
-            conn.update(worksheet="Performances", data=df_final)
-            st.balloons()
+            nouvelle_ligne = pd.DataFrame([{'user': st.session_state.user_id, 'temp': data_m['hourly']['temperature_2m'][12], 'wind': data_m['hourly']['windspeed_10m'][12], 'hum': data_m['hourly']['relative_humidity_2m'][12], 'watts': w_moy, 'date': datetime.now().strftime("%Y-%m-%d")}])
+            conn.update(worksheet="Performances", data=pd.concat([df_all, nouvelle_ligne], ignore_index=True))
             st.rerun()
-
 else:
     st.info("👋 Connecte-toi pour tes prédictions IA.")
 
 st.divider()
 
-# 3. Carte GPX
+# 3. Carte
 if pts_gpx:
-    st.header(f"🗺️ Parcours : {st.session_state.nom_ville}")
+    st.header("🗺️ Tracé")
     m = folium.Map(location=pts_gpx[0], zoom_start=12)
     folium.PolyLine(pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1000, height=400)
