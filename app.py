@@ -37,40 +37,44 @@ def obtenir_coords(ville):
     except: pass
     return 47.06, -0.88, False
 
-# --- LOGIQUE GPX : PLACÉE TRÈS HAUT POUR RÉGLER LA VILLE ---
-# On met le file_uploader dans la sidebar mais on traite la donnée AVANT la météo
-st.sidebar.header("🌍 Parcours & Localisation")
-f_gpx = st.sidebar.file_uploader("📂 Charger un GPX (Soullans détecté ici)", type=['gpx'])
+# --- LOGIQUE GPX : PLACÉE AU DESSUS DE TOUT ---
+# On crée le widget de chargement tout en haut de la sidebar
+st.sidebar.header("🌍 Localisation & Parcours")
+f_gpx = st.sidebar.file_uploader("📂 Importer un GPX (Détection auto)", type=['gpx'], key="main_gpx")
 
 pts_gpx = None
 if f_gpx:
+    # On parse le fichier immédiatement
     gpx_parsed = gpxpy.parse(f_gpx)
     pts_gpx = [[p.latitude, p.longitude] for t in gpx_parsed.tracks for s in t.segments for p in s.points]
+    
     if pts_gpx:
         try:
-            # On détecte la ville du GPX
+            # On détecte la ville du point de départ (ex: Soullans)
             g_inv = geocoder.osm([pts_gpx[0][0], pts_gpx[0][1]], method='reverse')
-            ville_gpx = g_inv.city if g_inv.city else g_inv.town
+            ville_trouvee = g_inv.city if g_inv.city else g_inv.town
             
-            # CRUCIAL : Si le GPX dit Soullans, on force la ville et on RECHARGE tout de suite
-            if ville_gpx and ville_gpx != st.session_state.nom_ville:
-                st.session_state.nom_ville = ville_gpx
+            # FORCE : Si la ville GPX est différente, on met à jour et on stoppe tout pour relancer proprement
+            if ville_trouvee and ville_trouvee != st.session_state.nom_ville:
+                st.session_state.nom_ville = ville_trouvee
                 st.rerun() 
         except:
             pass
 
-# Le champ texte affiche Soullans car la session a été mise à jour juste au-dessus
-ville_input = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville)
-if ville_input != st.session_state.nom_ville:
-    st.session_state.nom_ville = ville_input
+# Le widget de texte suit la session_state (qui peut être modifiée par le GPX au dessus)
+ville_a_afficher = st.sidebar.text_input("📍 Ville active", value=st.session_state.nom_ville, key="ville_widget")
+
+# Si l'utilisateur change manuellement la ville dans le champ texte
+if ville_a_afficher != st.session_state.nom_ville:
+    st.session_state.nom_ville = ville_a_afficher
     st.rerun()
 
-# --- RÉCUPÉRATION MÉTEO (Maintenant elle aura la bonne ville) ---
-lat, lon, _ = obtenir_coords(st.session_state.nom_ville)
-api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
-data_m = requests.get(api_url).json()
+# --- PARAMÈTRES ET AUTHENTIFICATION ---
+st.sidebar.divider()
+sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
+sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
+sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
 
-# --- BARRE LATÉRALE : AUTHENTIFICATION ---
 st.sidebar.divider()
 st.sidebar.header("🔐 Accès Membre")
 if not st.session_state.logged_in:
@@ -85,24 +89,27 @@ if not st.session_state.logged_in:
             st.session_state.display_name = input_pseudo
             st.rerun()
 else:
-    st.sidebar.write(f"✅ Membre : {st.session_state.display_name}")
+    st.sidebar.success(f"Connecté : {st.session_state.display_name}")
     if st.sidebar.button("Déconnexion"):
         st.session_state.logged_in = False
         st.rerun()
 
-sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
-sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
-sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
+# --- RÉCUPÉRATION MÉTEO ---
+lat, lon, _ = obtenir_coords(st.session_state.nom_ville)
+api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
+data_m = requests.get(api_url).json()
 
 # --- PAGE PRINCIPALE ---
 st.title(f"🚴 Coach IA : {st.session_state.nom_ville}")
 
-# 1. MÉTÉO
-st.header(f"🌤️ Conditions à {st.session_state.nom_ville}")
+# 1. MÉTÉO (Source de vérité : st.session_state.nom_ville)
+st.header(f"🌤️ Conditions pour {st.session_state.nom_ville}")
 if 'hourly' in data_m:
     m_cols = st.columns(4)
     for i, h in enumerate([10, 13, 16, 19]):
-        t, v, p = data_m['hourly']['temperature_2m'][h], data_m['hourly']['windspeed_10m'][h], data_m['hourly']['precipitation_probability'][h]
+        t = data_m['hourly']['temperature_2m'][h]
+        v = data_m['hourly']['windspeed_10m'][h]
+        p = data_m['hourly']['precipitation_probability'][h]
         score = max(0, min(100, int(100 - (12-t if t<12 else 0)*sf/5 - v*0.8*sv/5 - p*1.2*sp/5)))
         with m_cols[i]:
             color = "green" if score > 75 else "orange" if score > 45 else "red"
@@ -113,7 +120,7 @@ st.divider()
 
 # 2. IA
 if st.session_state.logged_in:
-    st.header(f"🤖 Analyse Performance : {st.session_state.display_name}")
+    st.header(f"🤖 Analyse de {st.session_state.display_name}")
     df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
     df_user = df_all[(df_all['user'].astype(str) == st.session_state.user_id) & (df_all['date'] != 'INIT')]
     
@@ -122,13 +129,13 @@ if st.session_state.logged_in:
         model.fit(df_user[['temp', 'wind', 'hum']], df_user['watts'])
         t13, v13, h13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
         pred = model.predict([[t13, v13, h13]])[0]
-        st.success(f"🎯 Estimation puissance à 13h : **{int(pred)} Watts**")
+        st.success(f"🎯 Puissance estimée à 13h : **{int(pred)} Watts**")
     else:
-        st.info("Besoin de 3 sorties pour l'IA.")
-
+        st.info("Ajoutez 3 sorties CSV pour activer l'IA.")
+    
     with st.expander("📥 Ajouter une sortie CSV"):
-        f_csv = st.file_uploader("Fichier CSV", type=['csv'])
-        if f_csv and st.button("Sauvegarder"):
+        f_csv = st.file_uploader("Fichier CSV", type=['csv'], key="csv_up")
+        if f_csv and st.button("Enregistrer"):
             df_new = pd.read_csv(f_csv)
             df_new.columns = [c.lower().strip() for c in df_new.columns]
             w_moy = df_new[df_new['watts']>0]['watts'].mean()
@@ -136,7 +143,7 @@ if st.session_state.logged_in:
             conn.update(worksheet="Performances", data=pd.concat([df_all, nouvelle_ligne], ignore_index=True))
             st.rerun()
 else:
-    st.info("👋 Connecte-toi pour tes prédictions IA.")
+    st.info("👋 Connectez-vous pour vos prédictions de puissance.")
 
 st.divider()
 
@@ -146,3 +153,4 @@ if pts_gpx:
     m = folium.Map(location=pts_gpx[0], zoom_start=12)
     folium.PolyLine(pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1000, height=400)
+    
