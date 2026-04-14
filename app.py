@@ -57,7 +57,7 @@ def entrainer_ia(df):
     # On utilise la température pour prédire la puissance (Watts)
     # On retire les lignes où les watts sont à 0 (pauses) pour ne pas fausser l'IA
     df_clean = df[df['watts'] > 0].dropna(subset=['temp', 'watts'])
-    X = df_clean[['temp']]
+    X = df_clean[['temp', 'cadence']]
     y = df_clean['watts']
     
     model = RandomForestRegressor(n_estimators=100, random_state=42)
@@ -116,7 +116,7 @@ if fichier_perf:
     if os.path.exists('modele_velo.pkl'):
         model = joblib.load('modele_velo.pkl')
         temp_midi = res_meteo['hourly']['temperature_2m'][13]
-        pred = model.predict([[temp_midi]])[0]
+        pred = model.predict([[temp_midi, 85]])[0]
         st.info(f"💡 Prédiction IA : À {temp_midi}°C, votre puissance attendue est de **{int(pred)}W**.")
 
     if 'altitude' in df.columns:
