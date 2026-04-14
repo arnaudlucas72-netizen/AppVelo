@@ -8,9 +8,12 @@ from streamlit_folium import st_folium
 from datetime import datetime, timedelta
 import math
 import plotly.express as px
+from sklearn.ensemble import RandomForestRegressor
+import joblib
+import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Coach Vélo Intégral", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="Coach Vélo Pro & IA", page_icon="🚴", layout="wide")
 
 # --- FONCTIONS TECHNIQUES ---
 def calculer_cap(lat1, lon1, lat2, lon2):
@@ -34,9 +37,7 @@ def obtenir_coords_securise(ville):
 
 def calculer_score_meteo(t, v, raf, hum, p, sens_f, sens_v, sens_p):
     score = 100
-    if t < 10 and hum > 80: score -= (20 * sens_f / 5) 
-    elif t < 5: score -= (35 * sens_f / 5)
-    elif t < 12: score -= (12 * sens_f / 5)
+    if t < 12: score -= (12 * sens_f / 5)
     impact_vent = (v * 0.6) + (raf * 1.4)
     score -= (impact_vent * (sens_v / 5) * 0.9)
     score -= (p * (sens_p / 5) * 1.5)
@@ -51,6 +52,19 @@ def obtenir_donnees_soleil(lat, lon):
         return sunrise, sunset
     except: return None, None
 
+# --- LOGIQUE MACHINE LEARNING ---
+def entrainer_ia(df):
+    # On utilise la température pour prédire la puissance (Watts)
+    # On retire les lignes où les watts sont à 0 (pauses) pour ne pas fausser l'IA
+    df_clean = df[df['watts'] > 0].dropna(subset=['temp', 'watts'])
+    X = df_clean[['temp']]
+    y = df_clean['watts']
+    
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
+    joblib.dump(model, 'modele_velo.pkl')
+    return model
+
 # --- BARRE LATÉRALE ---
 st.sidebar.header("⚙️ Configuration")
 nom_ville_saisie = st.sidebar.text_input("📍 Ville par défaut", "Cholet")
@@ -60,9 +74,12 @@ s_pluie = st.sidebar.slider("🌧️ Sensibilité Pluie", 0, 10, 7)
 
 # --- LOGIQUE DE POSITION ---
 lat_ref, lon_ref, ok = obtenir_coords_securise(nom_ville_saisie)
+url_meteo = f"https://api.open-meteo.com/v1/forecast?latitude={lat_ref}&longitude={lon_ref}&hourly=temperature_2m,windspeed_10m,wind_gusts_10m,winddirection_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
+res_meteo = requests.get(url_meteo).json()
+sunrise, sunset = obtenir_donnees_soleil(lat_ref, lon_ref)
 
 # --- PAGE PRINCIPALE ---
-st.title("🚴 Mon Assistant Cycliste")
+st.title("🚴 Coach Vélo Intelligent")
 
 col_u1, col_u2 = st.columns(2)
 with col_u1:
@@ -72,83 +89,65 @@ with col_u2:
 
 st.divider()
 
-# --- RÉCUPÉRATION MÉTÉO ---
-url_meteo = f"https://api.open-meteo.com/v1/forecast?latitude={lat_ref}&longitude={lon_ref}&hourly=temperature_2m,windspeed_10m,wind_gusts_10m,winddirection_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
-res_meteo = requests.get(url_meteo).json()
-sunrise, sunset = obtenir_donnees_soleil(lat_ref, lon_ref)
-
-# --- 1. PERFORMANCE & DÉNIVELÉ ---
+# --- 1. PERFORMANCE & IA ---
 if fichier_perf:
-    st.header("📈 Analyse de la Sortie")
+    st.header("📈 Analyse & Apprentissage")
     df = pd.read_csv(fichier_perf)
     df.columns = [c.lower().strip() for c in df.columns]
     
     c1, c2, c3, c4 = st.columns(4)
     if 'watts' in df.columns:
-        c1.metric("Puissance Moy", f"{int(df['watts'].mean())} W")
+        p_moy = int(df['watts'].mean())
+        c1.metric("Puissance Moy", f"{p_moy} W")
     if 'velocity_smooth' in df.columns:
         v_kmh = df['velocity_smooth'].mean() * 3.6
         c2.metric("Vitesse Moy", f"{v_kmh:.1f} km/h")
     if 'altitude' in df.columns:
         diffs = df['altitude'].diff().fillna(0)
-        d_plus = int(diffs[diffs > 0].sum())
-        c3.metric("Dénivelé Positif (D+)", f"{d_plus} m")
-        c4.metric("Altitude Max", f"{int(df['altitude'].max())} m")
-        
+        c3.metric("Dénivelé D+", f"{int(diffs[diffs > 0].sum())} m")
+    
+    # Section IA
+    st.subheader("🤖 Intelligence Artificielle")
+    if st.button("Enseigner cette sortie à mon IA"):
+        with st.spinner("Analyse des données en cours..."):
+            entrainer_ia(df)
+            st.success("L'IA a mémorisé votre effort à cette température !")
+
+    if os.path.exists('modele_velo.pkl'):
+        model = joblib.load('modele_velo.pkl')
+        temp_midi = res_meteo['hourly']['temperature_2m'][13]
+        pred = model.predict([[temp_midi]])[0]
+        st.info(f"💡 Prédiction IA : À {temp_midi}°C, votre puissance attendue est de **{int(pred)}W**.")
+
+    if 'altitude' in df.columns:
         fig = px.area(df, y='altitude', title="Profil Altitométrique", color_discrete_sequence=['#ef4444'])
         st.plotly_chart(fig, use_container_width=True)
 
 # --- 2. CARTE GPX ---
 if fichier_gpx:
-    st.header("🗺️ Direction du vent sur le tracé")
+    st.header("🗺️ Vent sur le tracé")
     gpx = gpxpy.parse(fichier_gpx)
     pts = [[p.latitude, p.longitude] for t in gpx.tracks for s in t.segments for p in s.points]
     h_now = datetime.now().hour
     v_dir = res_meteo['hourly']['winddirection_10m'][h_now]
-    
     m = folium.Map(location=pts[0], zoom_start=12)
     folium.PolyLine(pts, color="blue", weight=4).add_to(m)
     folium.Marker(location=pts[0], icon=folium.Icon(color='red', icon='arrow-up', angle=v_dir)).add_to(m)
     st_folium(m, width=1000, height=400)
 
-# --- 3. PRÉVISIONS MÉTÉO COMPLÈTES ---
+# --- 3. PRÉVISIONS MÉTÉO ---
 st.divider()
 st.header(f"🌤️ Prévisions Météo : {nom_ville_saisie}")
-
 if 'hourly' in res_meteo:
     creneaux = [10, 13, 16, 19]
     cols = st.columns(4)
-    
     for i, h in enumerate(creneaux):
-        t = res_meteo['hourly']['temperature_2m'][h]
-        v = res_meteo['hourly']['windspeed_10m'][h]
-        raf = res_meteo['hourly']['wind_gusts_10m'][h]
-        hum = res_meteo['hourly']['relative_humidity_2m'][h]
-        p = res_meteo['hourly']['precipitation_probability'][h]
-        
-        score = calculer_score_meteo(t, v, raf, hum, p, s_froid, s_vent, s_pluie)
-        
+        t, v, p = res_meteo['hourly']['temperature_2m'][h], res_meteo['hourly']['windspeed_10m'][h], res_meteo['hourly']['precipitation_probability'][h]
+        score = calculer_score_meteo(t, v, 0, 0, p, s_froid, s_vent, s_pluie)
         with cols[i]:
             color = "green" if score > 75 else "orange" if score > 45 else "red"
-            st.markdown(f"### {h}h00")
-            st.markdown(f"<h1 style='color:{color};'>{score}</h1>", unsafe_allow_html=True)
-            # Retour des infos détaillées
-            st.write(f"🌡️ **{t}°C**")
-            st.write(f"💨 **{v} km/h** (Raf. {raf})")
-            st.write(f"🌧️ **{p}%** pluie")
-            st.progress(score/100)
+            st.markdown(f"### {h}h00\n<h1 style='color:{color};'>{score}</h1>", unsafe_allow_html=True)
+            st.write(f"🌡️ {t}°C | 💨 {v}km/h | 🌧️ {p}%")
 
-# --- 4. EPHEMERIDE ---
 if sunset:
-    st.divider()
-    col1, col2, col3 = st.columns(3)
-    col1.write(f"🌅 Lever du soleil : **{sunrise.strftime('%H:%M')}**")
-    col2.write(f"🌇 Coucher du soleil : **{sunset.strftime('%H:%M')}**")
-    if datetime.now().astimezone() > (sunset - timedelta(hours=1)):
-        col3.warning("⚠️ Visibilité en baisse bientôt !")
-
-st.divider()
-with st.expander("ℹ️ À propos de cette application"):
-    with open("README.md", "r", encoding="utf-8") as f:
-        st.markdown(f.read())
-        
+    st.caption(f"🌅 Lever : {sunrise.strftime('%H:%M')} | 🌇 Coucher : {sunset.strftime('%H:%M')}")
