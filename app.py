@@ -13,7 +13,17 @@ import hashlib
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Coach IA Cyclisme", page_icon="🚴", layout="wide")
 
-# Connexion au Google Sheet
+# Initialisation des variables de session
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'display_name' not in st.session_state:
+    st.session_state.display_name = None
+if 'nom_ville' not in st.session_state:
+    st.session_state.nom_ville = "Cholet"
+
+# Connexion Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except:
@@ -31,15 +41,7 @@ def obtenir_coords(ville):
     except: pass
     return 47.06, -0.88, False
 
-# --- INITIALISATION SESSION ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
-if 'display_name' not in st.session_state:
-    st.session_state.display_name = None
-
-# --- BARRE LATÉRALE : ACCÈS & CONFIG ---
+# --- BARRE LATÉRALE : ACCÈS ---
 st.sidebar.header("🔐 Accès Membre")
 input_pseudo = st.sidebar.text_input("Pseudo").strip()
 input_password = st.sidebar.text_input("Mot de passe", type="password").strip()
@@ -63,35 +65,62 @@ if col_auth2.button("Créer compte"):
         df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
         pseudos_pris = [u.split('_')[0] for u in df_all['user'].astype(str).unique()]
         if input_pseudo in pseudos_pris:
-            st.sidebar.error("Pseudo déjà pris.")
+            st.sidebar.error("Ce pseudo est déjà utilisé.")
         else:
             user_key = f"{input_pseudo}_{hacher_password(input_password)}"
             init_row = pd.DataFrame([{'user': user_key, 'date': 'INIT', 'watts': 0, 'temp': 0, 'wind': 0, 'hum': 0}])
             df_final = pd.concat([df_all, init_row], ignore_index=True)
             conn.update(worksheet="Performances", data=df_final)
-            st.sidebar.success("Compte créé !")
+            st.sidebar.success("Compte créé ! Connecte-toi.")
 
 if st.session_state.logged_in and st.sidebar.button("Déconnexion"):
     st.session_state.logged_in = False
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header("🌍 Localisation")
-nom_ville = st.sidebar.text_input("Ville", "Cholet")
+st.sidebar.header("🌍 Localisation & Paramètres")
+
+# La ville peut être modifiée manuellement ici
+ville_manuelle = st.sidebar.text_input("📍 Ville actuelle", value=st.session_state.nom_ville)
+if ville_manuelle != st.session_state.nom_ville:
+    st.session_state.nom_ville = ville_manuelle
+    st.rerun()
+
 sf = st.sidebar.slider("🌡️ Sens. Froid", 0, 10, 5)
 sv = st.sidebar.slider("💨 Sens. Vent", 0, 10, 5)
 sp = st.sidebar.slider("🌧️ Sens. Pluie", 0, 10, 7)
 
-# Récupération Météo
-lat, lon, _ = obtenir_coords(nom_ville)
+# --- GESTION GPX & AUTO-DETECTION VILLE ---
+st.sidebar.divider()
+f_gpx = st.sidebar.file_uploader("📂 Importer un parcours (GPX)", type=['gpx'])
+
+pts_gpx = None
+if f_gpx:
+    gpx = gpxpy.parse(f_gpx)
+    pts_gpx = [[p.latitude, p.longitude] for t in gpx.tracks for s in t.segments for p in s.points]
+    if pts_gpx:
+        # On tente de trouver le nom de la ville du départ
+        try:
+            g_inv = geocoder.osm([pts_gpx[0][0], pts_gpx[0][1]], method='reverse')
+            if g_inv and g_inv.city and g_inv.city != st.session_state.nom_ville:
+                st.session_state.nom_ville = g_inv.city
+                st.rerun()
+        except:
+            pass
+
+# --- RECUPERATION METEO ---
+lat, lon, _ = obtenir_coords(st.session_state.nom_ville)
 api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,windspeed_10m,relative_humidity_2m,precipitation_probability&forecast_days=1"
-data_m = requests.get(api_url).json()
+try:
+    data_m = requests.get(api_url).json()
+except:
+    data_m = {}
 
 # --- PAGE PRINCIPALE ---
-st.title("🚴 Coach IA & Météo")
+st.title("🚴 Coach IA & Performance")
 
-# 1. SECTION MÉTÉO (TOUJOURS VISIBLE)
-st.header(f"🌤️ Prévisions pour {nom_ville}")
+# 1. Prévisions Météo (Basées sur la ville détectée ou saisie)
+st.header(f"🌤️ Météo et Scores : {st.session_state.nom_ville}")
 if 'hourly' in data_m:
     m_cols = st.columns(4)
     for i, h in enumerate([10, 13, 16, 19]):
@@ -99,7 +128,7 @@ if 'hourly' in data_m:
         v = data_m['hourly']['windspeed_10m'][h]
         p = data_m['hourly']['precipitation_probability'][h]
         
-        # Calcul du score
+        # Score de sortie
         score = 100
         if t < 12: score -= (12 * sf / 5)
         score -= (v * 0.8 * sv / 5)
@@ -114,9 +143,9 @@ if 'hourly' in data_m:
 
 st.divider()
 
-# 2. SECTION IA (SI CONNECTÉ)
+# 2. IA & Performances (Si connecté)
 if st.session_state.logged_in:
-    st.header(f"🤖 Espace IA : {st.session_state.display_name}")
+    st.header(f"🤖 Analyse de {st.session_state.display_name}")
     df_all = conn.read(worksheet="Performances", ttl=0).dropna(how='all')
     df_user = df_all[(df_all['user'].astype(str).str.strip() == st.session_state.user_id) & (df_all['date'] != 'INIT')]
     
@@ -126,19 +155,23 @@ if st.session_state.logged_in:
     if nb_sorties >= 3:
         model = RandomForestRegressor(n_estimators=100, random_state=42)
         model.fit(df_user[['temp', 'wind', 'hum']], df_user['watts'])
+        
+        # Prédiction 13h
         t13, v13, h13 = data_m['hourly']['temperature_2m'][13], data_m['hourly']['windspeed_10m'][13], data_m['hourly']['relative_humidity_2m'][13]
         pred = model.predict([[t13, v13, h13]])[0]
+        
         c1.metric("Sorties", nb_sorties)
-        c2.success(f"🎯 Estimation à 13h : **{int(pred)} Watts**")
+        c2.success(f"🎯 Estimation puissance à 13h : **{int(pred)} Watts**")
     else:
         c1.metric("Sorties", f"{nb_sorties}/3")
-        c2.info(f"Ajoute encore {3-nb_sorties} sorties pour débloquer l'IA.")
+        c2.info(f"Ajoute encore {3-nb_sorties} sorties CSV pour activer ton IA perso.")
 
-    with st.expander("📥 Ajouter une sortie CSV"):
-        f_csv = st.file_uploader("Fichier CSV", type=['csv'])
-        if f_csv and st.button("Sauvegarder la performance"):
+    with st.expander("📥 Enregistrer une sortie CSV"):
+        f_csv = st.file_uploader("Fichier CSV de performance", type=['csv'])
+        if f_csv and st.button("Sauvegarder dans mon Cloud"):
             df_new = pd.read_csv(f_csv)
             df_new.columns = [c.lower().strip() for c in df_new.columns]
+            
             w_moy = df_new[df_new['watts']>0]['watts'].mean()
             t_moy = df_new[df_new['watts']>0]['temp'].mean() if 'temp' in df_new.columns else data_m['hourly']['temperature_2m'][12]
             
@@ -150,22 +183,25 @@ if st.session_state.logged_in:
                 'watts': w_moy,
                 'date': datetime.now().strftime("%Y-%m-%d")
             }])
+            
             df_final = pd.concat([df_all, nouvelle_ligne], ignore_index=True)
             conn.update(worksheet="Performances", data=df_final)
             st.balloons()
             st.rerun()
+
+    if not df_user.empty:
+        with st.expander("📂 Voir mon historique"):
+            st.dataframe(df_user[['date', 'temp', 'watts']].sort_values(by='date', ascending=False))
 else:
-    st.info("👋 Connecte-toi via la barre latérale pour accéder à ton suivi de puissance IA.")
+    st.info("👋 Connecte-toi via la barre latérale pour accéder à tes prédictions IA.")
 
 st.divider()
 
-# 3. SECTION CARTE (TOUJOURS VISIBLE)
-st.header("🗺️ Tracer un parcours GPX")
-f_gpx = st.file_uploader("Charger GPX", type=['gpx'])
-if f_gpx:
-    gpx = gpxpy.parse(f_gpx)
-    pts = [[p.latitude, p.longitude] for t in gpx.tracks for s in t.segments for p in s.points]
-    m = folium.Map(location=pts[0], zoom_start=12)
-    folium.PolyLine(pts, color="blue", weight=4).add_to(m)
+# 3. Carte GPX
+if pts_gpx:
+    st.header("🗺️ Visualisation du parcours")
+    m = folium.Map(location=pts_gpx[0], zoom_start=12)
+    folium.PolyLine(pts_gpx, color="blue", weight=4).add_to(m)
     st_folium(m, width=1000, height=400)
-    
+else:
+    st.caption("Charge un fichier GPX dans la barre latérale pour voir la carte.")
